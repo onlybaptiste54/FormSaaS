@@ -13,9 +13,16 @@ type Selection = {
   label: string;
 };
 
-type Capture = Selection & { dataUrl: string };
+type Capture = Selection & { dataUrl?: string };
 type ChatMessage = { id: string; role: "assistant" | "user"; text: string; capture?: Capture; error?: boolean };
 type LunaStatus = { configured: boolean; provider: string; model: string | null };
+
+const WELCOME_MESSAGES: ChatMessage[] = [
+  { id: "welcome", role: "assistant", text: "Sélectionnez une zone ou décrivez directement ce que vous souhaitez modifier." },
+];
+
+/** Nombre de messages conserves par campagne dans le stockage local. */
+const CHAT_HISTORY_LIMIT = 40;
 
 export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campaign; onCampaignChange: (campaign: Campaign) => void }) {
   const [company, setCompany] = useState<Me["company"] | null>(null);
@@ -25,16 +32,43 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   const [pendingCapture, setPendingCapture] = useState<Capture | null>(null);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { id: "welcome", role: "assistant", text: "Sélectionnez une zone ou décrivez directement ce que vous souhaitez modifier." },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(WELCOME_MESSAGES);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const storageKey = `luna-chat-${campaign.id}`;
 
   useEffect(() => {
     void api<Me>("/me").then(data => setCompany(data.company));
     void api<LunaStatus>("/luna/status").then(setStatus);
   }, []);
+
+  // Restauration au montage : la lecture se fait dans un effet, pas dans le
+  // useState, pour ne pas desynchroniser le rendu serveur de Next.
+  useEffect(() => {
+    let saved: ChatMessage[] | null = null;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.length) saved = parsed as ChatMessage[];
+    } catch {
+      saved = null;
+    }
+    setMessages(saved || WELCOME_MESSAGES);
+  }, [storageKey]);
+
+  // Les captures PNG ne sont pas persistees : elles satureraient le quota.
+  // Le libelle de la zone reste affiche.
+  useEffect(() => {
+    if (messages.length <= 1) return;
+    try {
+      const persisted = messages.slice(-CHAT_HISTORY_LIMIT).map(message =>
+        message.capture ? { ...message, capture: { ...message.capture, dataUrl: undefined } } : message,
+      );
+      localStorage.setItem(storageKey, JSON.stringify(persisted));
+    } catch {
+      // Quota depasse ou stockage indisponible : la conversation reste en memoire.
+    }
+  }, [messages, storageKey]);
 
   useEffect(() => {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
@@ -159,7 +193,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
       </header>
       <div className="luna-chat-messages" ref={messagesRef}>
         {messages.map(message => <div className={`chat-message ${message.role} ${message.error ? "error" : ""}`} key={message.id}>
-          {message.capture && <div className="chat-capture"><img src={message.capture.dataUrl} alt={`Capture : ${message.capture.label}`}/><span><ImageIcon size={13}/>{message.capture.label}</span></div>}
+          {message.capture && <div className="chat-capture">{message.capture.dataUrl && <img src={message.capture.dataUrl} alt={`Capture : ${message.capture.label}`}/>}<span><ImageIcon size={13}/>{message.capture.label}</span></div>}
           <p>{message.text}</p>
         </div>)}
         {busy && <div className="chat-message assistant thinking"><span/><span/><span/></div>}
