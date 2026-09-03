@@ -32,6 +32,8 @@ Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour rep
 - Connexion sécurisée par jeton et rôles préparés côté données
 - Identité d’entreprise : juridique, palette, ton et contact DPO
 - Création par prompt avec Luna via l’API OpenAI Responses et sortie structurée
+- Design généré par tokens sûrs, aperçu en direct et modification conversationnelle
+- Capture ciblée d’un bloc du formulaire, jointe visuellement au chat Luna
 - Génération adaptée aux contacts, sondages, événements et visites de chantier
 - Règle MOFU : 5 champs métier maximum, plus consentement
 - Gestion des campagnes : statut, visibilité, duplication et archivage
@@ -72,7 +74,7 @@ Variables principales :
 | `OPENAI_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_TIMEOUT_SECONDS` | `30` |
 
-Avec une clé configurée, Luna transmet à OpenAI uniquement le brief de campagne, le nom commercial, le secteur, le ton et les couleurs de marque. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont pas transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement lorsqu’aucune clé n’est configurée.
+Avec une clé configurée, Luna transmet à OpenAI uniquement le brief de campagne, le contenu du formulaire vide, le nom commercial, le secteur, le ton et les couleurs de marque. Lors d’une modification visuelle, la capture PNG de la zone explicitement sélectionnée est également envoyée. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement pour la création lorsqu’aucune clé n’est configurée.
 
 ## Développement sans Docker
 

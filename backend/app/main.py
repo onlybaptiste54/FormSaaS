@@ -10,10 +10,10 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .database import Base, SessionLocal, engine, get_db
-from .luna import LunaAPIError, generate_campaign
+from .database import Base, SessionLocal, engine, ensure_compatible_schema, get_db
+from .luna import LunaAPIError, default_design, generate_campaign, revise_campaign
 from .models import Campaign, Company, FormResponse, User
-from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, SubmitResponse
+from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
 from .seed import seed
 
@@ -21,6 +21,7 @@ from .seed import seed
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_compatible_schema()
     with SessionLocal() as db:
         seed(db)
     yield
@@ -32,7 +33,7 @@ app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.co
 
 def campaign_json(c: Campaign):
     responses = len(c.responses)
-    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
+    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
 
 
 def luna_identity(company: Company) -> dict:
@@ -146,11 +147,48 @@ def update_campaign(campaign_id: str, data: CampaignUpdate, db: Session = Depend
     return campaign_json(campaign)
 
 
+@app.post("/api/campaigns/{campaign_id}/luna/refine")
+def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not settings.openai_api_key:
+        raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier le design avec Luna.")
+    campaign = owned_campaign(campaign_id, db, user)
+    try:
+        revision = revise_campaign(
+            {
+                "name": campaign.name,
+                "description": campaign.description,
+                "kind": campaign.kind,
+                "fields": campaign.fields,
+                "design": campaign.design or default_design(),
+                "thank_you": campaign.thank_you,
+            },
+            data.instruction,
+            luna_identity(user.company),
+            selection={
+                "kind": data.selection_kind,
+                "id": data.selection_id,
+                "label": data.selection_label,
+            },
+            screenshot_data_url=data.screenshot_data_url,
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    for key in ("name", "description", "kind", "fields", "design", "thank_you"):
+        setattr(campaign, key, revision[key])
+    db.commit()
+    db.refresh(campaign)
+    return {"message": revision["assistant_message"], "campaign": campaign_json(campaign)}
+
+
 @app.post("/api/campaigns/{campaign_id}/duplicate", status_code=201)
 def duplicate_campaign(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = owned_campaign(campaign_id, db, user)
     generated = generate_campaign(source.description or source.name, user.company.name)
-    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=generated["slug"], description=source.description, kind=source.kind, fields=source.fields, thank_you=source.thank_you, visibility="private")
+    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=generated["slug"], description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), thank_you=source.thank_you, visibility="private")
     db.add(copy)
     db.commit()
     db.refresh(copy)
@@ -194,7 +232,7 @@ def public_campaign(slug: str, db: Session = Depends(get_db)):
     campaign.visits += 1
     db.commit()
     c = campaign.company
-    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "thank_you": campaign.thank_you, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
+    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "thank_you": campaign.thank_you, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
 
 
 @app.post("/api/public/{slug}/submit", status_code=201)

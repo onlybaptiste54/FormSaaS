@@ -29,6 +29,18 @@ class LunaField(BaseModel):
     placeholder: str | None = Field(max_length=100)
 
 
+class LunaDesign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    layout: Literal["card", "split", "minimal"]
+    background: Literal["warm", "mist", "white", "ink"]
+    density: Literal["compact", "comfortable", "airy"]
+    radius: Literal["subtle", "rounded", "pill"]
+    field_style: Literal["outline", "filled", "underline"]
+    button_style: Literal["solid", "outline", "soft"]
+    heading_align: Literal["left", "center"]
+
+
 class LunaCampaign(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -36,12 +48,17 @@ class LunaCampaign(BaseModel):
     description: str = Field(min_length=10, max_length=260)
     kind: Literal["contact", "survey", "information"]
     fields: list[LunaField] = Field(min_length=1, max_length=5)
+    design: LunaDesign
     thank_you_title: str = Field(min_length=3, max_length=100)
     thank_you_message: str = Field(min_length=10, max_length=260)
 
 
+class LunaRevision(LunaCampaign):
+    assistant_message: str = Field(min_length=3, max_length=240)
+
+
 LUNA_INSTRUCTIONS = """Tu es Luna, experte française en formulaires MOFU courts et conformes au RGPD.
-À partir du brief et de l'identité visuelle fournis, conçois une campagne utile, claire et naturelle en français.
+À partir du brief et de l'identité visuelle fournis, conçois une campagne utile, claire, naturelle et visuellement cohérente en français.
 
 Contraintes impératives :
 - Produis uniquement les données demandées par le schéma JSON.
@@ -52,8 +69,35 @@ Contraintes impératives :
 - scale vaut un entier de 3 à 10 uniquement pour rating, sinon null.
 - placeholder est une aide courte ou null. Aucun dark pattern, aucune donnée sensible inutile.
 - Le ton et les textes doivent correspondre à l'identité de l'entreprise.
+- Choisis tous les tokens de design demandés. Ils doivent former une interface sobre, lisible et moderne.
+- N'utilise jamais de CSS, HTML, URL d'image ou valeur libre pour le design.
 - Le titre de remerciement peut contenir {prenom} si un champ de nom est présent.
 """
+
+LUNA_REVISION_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de formulaires français.
+Tu reçois le formulaire actuel, une zone sélectionnée, une demande de modification et parfois une capture PNG de cette zone.
+
+Contraintes impératives :
+- Retourne toujours le formulaire COMPLET et tous les tokens de design demandés, même si une seule zone change.
+- Modifie en priorité la zone sélectionnée et préserve tout ce que l'utilisateur n'a pas demandé de changer.
+- Interprète la capture uniquement comme référence visuelle du formulaire vide. N'en extrais aucune donnée personnelle.
+- La campagne reste de type contact, sondage ou information. Ne crée jamais de formulaire de devis.
+- Garde entre 1 et 5 champs métier. N'ajoute pas de consentement : le serveur réinjecte sa version contrôlée.
+- Aucun CSS, HTML, script, URL d'image ou token hors des valeurs autorisées.
+- Réponds en français avec assistant_message : une phrase courte expliquant ce qui a été appliqué.
+"""
+
+
+def default_design() -> dict:
+    return {
+        "layout": "card",
+        "background": "warm",
+        "density": "comfortable",
+        "radius": "rounded",
+        "field_style": "outline",
+        "button_style": "solid",
+        "heading_align": "left",
+    }
 
 def slugify(value: str) -> str:
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
@@ -115,6 +159,7 @@ def _generate_campaign_local(prompt: str, company_name: str) -> dict:
         "description": description,
         "kind": kind,
         "fields": fields,
+        "design": default_design(),
         "thank_you": {"title": "Merci {prenom} !", "message": "Votre réponse a bien été transmise. Notre équipe revient vers vous rapidement.", "action": "none", "button_label": "Retour au site", "button_url": "https://example.com"},
     }
 
@@ -172,6 +217,7 @@ def _normalize_ai_campaign(result: LunaCampaign, company_name: str) -> dict:
         "description": result.description,
         "kind": result.kind,
         "fields": fields,
+        "design": result.design.model_dump(),
         "thank_you": {
             "title": result.thank_you_title,
             "message": result.thank_you_message,
@@ -180,6 +226,42 @@ def _normalize_ai_campaign(result: LunaCampaign, company_name: str) -> dict:
             "button_url": "https://example.com",
         },
     }
+
+
+def _request_openai(
+    request_payload: dict,
+    *,
+    api_key: str,
+    timeout_seconds: float,
+    transport: httpx.BaseTransport | None,
+) -> dict:
+    try:
+        with httpx.Client(timeout=timeout_seconds, transport=transport) as client:
+            response = client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=request_payload,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("OpenAI rejected Luna generation with status %s", exc.response.status_code)
+        if exc.response.status_code == 401:
+            raise LunaAPIError("La clé OpenAI de Luna est invalide.") from exc
+        if exc.response.status_code == 429:
+            raise LunaAPIError("Luna a atteint sa limite OpenAI. Réessayez dans un instant.") from exc
+        raise LunaAPIError("Luna est temporairement indisponible côté OpenAI.") from exc
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        logger.warning("Luna request failed: %s", type(exc).__name__)
+        raise LunaAPIError("Luna est temporairement indisponible côté OpenAI.") from exc
+
+
+def _validate_screenshot(data_url: str | None) -> str | None:
+    if not data_url:
+        return None
+    if not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", data_url):
+        raise LunaAPIError("La capture envoyée à Luna n'est pas une image valide.")
+    return data_url
 
 
 def generate_campaign(
@@ -216,25 +298,89 @@ def generate_campaign(
     }
 
     try:
-        with httpx.Client(timeout=timeout_seconds, transport=transport) as client:
-            response = client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=request_payload,
-            )
-            response.raise_for_status()
-            result = LunaCampaign.model_validate_json(_output_text(response.json()))
-    except httpx.HTTPStatusError as exc:
-        logger.warning("OpenAI rejected Luna generation with status %s", exc.response.status_code)
-        if exc.response.status_code == 401:
-            raise LunaAPIError("La clé OpenAI de Luna est invalide.") from exc
-        if exc.response.status_code == 429:
-            raise LunaAPIError("Luna a atteint sa limite OpenAI. Réessayez dans un instant.") from exc
-        raise LunaAPIError("Luna est temporairement indisponible côté OpenAI.") from exc
-    except (httpx.HTTPError, json.JSONDecodeError, ValidationError, LunaAPIError) as exc:
+        result = LunaCampaign.model_validate_json(_output_text(_request_openai(
+            request_payload,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )))
+    except (ValidationError, LunaAPIError) as exc:
         logger.warning("Luna generation failed: %s", type(exc).__name__)
         if isinstance(exc, LunaAPIError):
             raise
         raise LunaAPIError("Luna n'a pas pu générer un formulaire valide. Réessayez.") from exc
 
     return _normalize_ai_campaign(result, company_name)
+
+
+def revise_campaign(
+    current_campaign: dict,
+    instruction: str,
+    identity: str | dict,
+    *,
+    selection: dict,
+    screenshot_data_url: str | None,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Revise content and safe design tokens using optional visual context."""
+    if not api_key:
+        raise LunaAPIError("Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier le design avec Luna.")
+
+    company_name = _company_name(identity)
+    business_fields = [item for item in current_campaign.get("fields", []) if item.get("type") != "consent"][:5]
+    current_payload = {
+        "name": current_campaign.get("name"),
+        "description": current_campaign.get("description"),
+        "kind": current_campaign.get("kind"),
+        "fields": business_fields,
+        "design": current_campaign.get("design") or default_design(),
+        "thank_you": current_campaign.get("thank_you"),
+    }
+    user_context = {
+        "instruction": instruction,
+        "selection": selection,
+        "current_campaign": current_payload,
+        "identity": _safe_identity(identity),
+    }
+    content = [{"type": "input_text", "text": json.dumps(user_context, ensure_ascii=False)}]
+    screenshot = _validate_screenshot(screenshot_data_url)
+    if screenshot:
+        content.append({"type": "input_image", "image_url": screenshot, "detail": "low"})
+
+    safety_source = str(_safe_identity(identity).get("name") or "sillage-user")
+    request_payload = {
+        "model": model,
+        "instructions": LUNA_REVISION_INSTRUCTIONS,
+        "input": [{"role": "user", "content": content}],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "sillage_campaign_revision",
+                "strict": True,
+                "schema": LunaRevision.model_json_schema(),
+            }
+        },
+        "max_output_tokens": 1800,
+        "store": False,
+        "safety_identifier": hashlib.sha256(safety_source.encode()).hexdigest()[:32],
+    }
+
+    try:
+        result = LunaRevision.model_validate_json(_output_text(_request_openai(
+            request_payload,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )))
+    except (ValidationError, LunaAPIError) as exc:
+        logger.warning("Luna revision failed: %s", type(exc).__name__)
+        if isinstance(exc, LunaAPIError):
+            raise
+        raise LunaAPIError("Luna n'a pas pu appliquer cette modification. Reformulez votre demande.") from exc
+
+    normalized = _normalize_ai_campaign(result, company_name)
+    normalized["assistant_message"] = result.assistant_message
+    return normalized

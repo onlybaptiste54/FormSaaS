@@ -28,7 +28,7 @@ def seed(db: Session):
     for idx, (name, kind, status, visits) in enumerate(specs):
         prompt = "sondage satisfaction note avis" if kind == "survey" else ("inscription événement" if kind == "information" else "formulaire de contact")
         generated = generate_campaign(prompt, company.name)
-        campaign = Campaign(company_id=company.id, creator_id=user.id, name=name, slug=generated["slug"], description=generated["description"], kind=kind, status=status, visibility="team" if idx == 0 else "private", fields=generated["fields"], thank_you=generated["thank_you"], visits=visits, created_at=datetime.now(timezone.utc) - timedelta(days=38 - idx * 9))
+        campaign = Campaign(company_id=company.id, creator_id=user.id, name=name, slug=generated["slug"], description=generated["description"], kind=kind, status=status, visibility="team" if idx == 0 else "private", fields=generated["fields"], design=generated["design"], thank_you=generated["thank_you"], visits=visits, created_at=datetime.now(timezone.utc) - timedelta(days=38 - idx * 9))
         db.add(campaign)
         db.flush()
         count = (68, 39, 4)[idx]
@@ -41,4 +41,3 @@ def seed(db: Session):
             response = FormResponse(campaign_id=campaign.id, answers=answers, source=rng.choice(["Lien direct", "QR Code", "Website", "Email"]), consent=True, consent_text=generated["fields"][-1]["label"], ip_address="192.0.2.1", user_agent="Sillage demo", created_at=datetime.now(timezone.utc) - timedelta(days=rng.randrange(0, 30), hours=rng.randrange(0, 24)))
             db.add(response)
     db.commit()
-

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -18,8 +18,17 @@ class CampaignUpdate(BaseModel):
     status: str | None = None
     visibility: str | None = None
     fields: list[dict[str, Any]] | None = None
+    design: dict[str, Any] | None = None
     thank_you: dict[str, Any] | None = None
     archived: bool | None = None
+
+
+class LunaRefineRequest(BaseModel):
+    instruction: str = Field(min_length=3, max_length=800)
+    selection_kind: Literal["form", "header", "field", "button"] = "form"
+    selection_id: str | None = Field(default=None, max_length=40)
+    selection_label: str = Field(default="Formulaire complet", max_length=140)
+    screenshot_data_url: str | None = Field(default=None, max_length=4_000_000)
 
 
 class SubmitResponse(BaseModel):
@@ -39,4 +48,3 @@ class CompanyUpdate(BaseModel):
     accent_color: str | None = None
     tone: str | None = None
     dpo_email: EmailStr | None = None
-
