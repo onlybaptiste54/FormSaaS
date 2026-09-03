@@ -15,6 +15,25 @@ DESIGN = {
     "heading_align": "left",
 }
 
+STYLE = {
+    "page_from": "#0B0F1A",
+    "page_to": "#1B2440",
+    "surface": "#101728",
+    "surface_alpha": 0.18,
+    "border": "#6EE7F9",
+    "border_alpha": 0.3,
+    "ink": "#F2F6FF",
+    "ink_soft": "#9FB0CE",
+    "accent": "#6EE7F9",
+    "accent_ink": "#04121C",
+    "blur_px": 24,
+    "radius_px": 28,
+    "glow": 0.7,
+    "font": "grotesk",
+}
+
+AI_DESIGN = {**DESIGN, "style": STYLE}
+
 
 def test_survey_generation_stays_short_and_rgpd_ready():
     campaign = generate_campaign("Je veux un sondage de satisfaction avec une note", "Atelier Test")
@@ -54,7 +73,7 @@ def test_openai_generation_uses_structured_output_and_safe_identity():
                 {"id": "nom", "label": "Nom", "type": "text", "required": True, "options": [], "scale": None, "placeholder": "Votre nom"},
                 {"id": "urgence", "label": "Est-ce urgent ?", "type": "radio", "required": True, "options": ["Oui", "Non"], "scale": None, "placeholder": None},
             ],
-            "design": DESIGN,
+            "design": AI_DESIGN,
             "thank_you_title": "Merci {prenom} !",
             "thank_you_message": "Votre demande a bien été transmise à notre équipe.",
         }
@@ -79,6 +98,8 @@ def test_openai_generation_uses_structured_output_and_safe_identity():
     assert len(campaign["fields"]) == 3
     assert campaign["fields"][-1]["type"] == "consent"
     assert campaign["design"]["layout"] == "card"
+    assert campaign["design"]["style"]["blur_px"] == 24
+    assert campaign["design"]["style"]["page_from"] == "#0B0F1A"
 
 
 def test_visual_revision_sends_selected_capture_and_returns_safe_tokens():
@@ -100,7 +121,7 @@ def test_visual_revision_sends_selected_capture_and_returns_safe_tokens():
             "fields": [
                 {"id": "email", "label": "Votre meilleur email", "type": "email", "required": True, "options": [], "scale": None, "placeholder": "vous@entreprise.fr"},
             ],
-            "design": {**DESIGN, "field_style": "filled", "radius": "pill"},
+            "design": {**AI_DESIGN, "field_style": "filled", "radius": "pill"},
             "thank_you_title": "Merci !",
             "thank_you_message": "Votre demande a bien été envoyée à notre équipe.",
             "assistant_message": "J’ai adouci le champ email et clarifié son libellé.",

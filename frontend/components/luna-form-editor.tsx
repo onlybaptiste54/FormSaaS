@@ -4,7 +4,7 @@ import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import { Camera, Check, Image as ImageIcon, LoaderCircle, MousePointer2, Send, Sparkles, X } from "lucide-react";
 import { toPng } from "html-to-image";
 import { api } from "@/lib/api";
-import { backgroundClassName, designClassNames, normalizeDesign } from "@/lib/form-design";
+import { backgroundClassName, designClassNames, formStyleVars, normalizeDesign } from "@/lib/form-design";
 import type { Campaign, Field, Me } from "@/lib/types";
 
 type Selection = {
@@ -43,6 +43,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   const design = normalizeDesign(campaign.design);
   const initials = (company?.name || "Sillage").split(" ").map(value => value[0]).join("").slice(0, 2).toUpperCase();
   const editorStyle = {
+    ...formStyleVars(design),
     "--client": company?.primary_color || "#2F6B4F",
     "--client-accent": company?.accent_color || "#EE755C",
   } as React.CSSProperties;

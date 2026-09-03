@@ -29,6 +29,35 @@ class LunaField(BaseModel):
     placeholder: str | None = Field(max_length=100)
 
 
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
+
+
+class LunaStyle(BaseModel):
+    """Identité visuelle libre, exprimée uniquement en valeurs validées.
+
+    Rien n'est interprété comme de la syntaxe CSS : chaque champ est une couleur
+    hexadécimale, un nombre borné ou une police de la liste. Le rendu applique
+    ces valeurs en variables CSS.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_from: str = Field(pattern=HEX_COLOR)
+    page_to: str = Field(pattern=HEX_COLOR)
+    surface: str = Field(pattern=HEX_COLOR)
+    surface_alpha: float = Field(ge=0.05, le=1)
+    border: str = Field(pattern=HEX_COLOR)
+    border_alpha: float = Field(ge=0, le=1)
+    ink: str = Field(pattern=HEX_COLOR)
+    ink_soft: str = Field(pattern=HEX_COLOR)
+    accent: str = Field(pattern=HEX_COLOR)
+    accent_ink: str = Field(pattern=HEX_COLOR)
+    blur_px: int = Field(ge=0, le=40)
+    radius_px: int = Field(ge=0, le=48)
+    glow: float = Field(ge=0, le=1)
+    font: Literal["sans", "grotesk", "serif", "mono"]
+
+
 class LunaDesign(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +68,7 @@ class LunaDesign(BaseModel):
     field_style: Literal["outline", "filled", "underline"]
     button_style: Literal["solid", "outline", "soft"]
     heading_align: Literal["left", "center"]
+    style: LunaStyle
 
 
 class LunaCampaign(BaseModel):
@@ -69,7 +99,11 @@ Contraintes impératives :
 - scale vaut un entier de 3 à 10 uniquement pour rating, sinon null.
 - placeholder est une aide courte ou null. Aucun dark pattern, aucune donnée sensible inutile.
 - Le ton et les textes doivent correspondre à l'identité de l'entreprise.
-- Choisis tous les tokens de design demandés. Ils doivent former une interface sobre, lisible et moderne.
+- Choisis tous les tokens de design ET toutes les valeurs de style demandés.
+- Le style est libre : sobre, chaleureux, sombre, futuriste ou verre dépoli selon le brief et l'identité. Ose une direction affirmée quand la demande le suggère, ne retombe pas systématiquement sur du neutre.
+- Pour un rendu verre / glassmorphism : dégradé de page sombre, surface_alpha entre 0.08 et 0.25, blur_px entre 16 et 32, border_alpha autour de 0.3, glow élevé.
+- Pour un rendu clair et sobre : surface_alpha proche de 1, blur_px à 0, glow bas.
+- Contrainte non négociable : le contraste doit rester lisible. ink doit trancher franchement sur surface, et accent_ink sur accent.
 - N'utilise jamais de CSS, HTML, URL d'image ou valeur libre pour le design.
 - Le titre de remerciement peut contenir {prenom} si un champ de nom est présent.
 """
@@ -78,13 +112,16 @@ LUNA_REVISION_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX 
 Tu reçois le formulaire actuel, une zone sélectionnée, une demande de modification et parfois une capture PNG de cette zone.
 
 Contraintes impératives :
-- Retourne toujours le formulaire COMPLET et tous les tokens de design demandés, même si une seule zone change.
+- Retourne toujours le formulaire COMPLET, tous les tokens de design et toutes les valeurs de style, même si une seule zone change.
+- Le style est libre dans les bornes du schéma : couleurs, flou, rayons, glow et police. Applique franchement la direction demandée (futuriste, verre dépoli, sombre, minimal) plutôt qu'un ajustement timide.
+- Garde toujours un contraste lisible entre ink et surface, et entre accent_ink et accent.
 - Modifie en priorité la zone sélectionnée et préserve tout ce que l'utilisateur n'a pas demandé de changer.
 - Interprète la capture uniquement comme référence visuelle du formulaire vide. N'en extrais aucune donnée personnelle.
 - La campagne reste de type contact, sondage ou information. Ne crée jamais de formulaire de devis.
 - Garde entre 1 et 5 champs métier. N'ajoute pas de consentement : le serveur réinjecte sa version contrôlée.
 - Aucun CSS, HTML, script, URL d'image ou token hors des valeurs autorisées.
 - Réponds en français avec assistant_message : une phrase courte expliquant ce qui a été appliqué.
+- N'annonce jamais une modification que le schéma ne permet pas. Si la demande sort de ce que tu peux produire (image de fond, police hors liste, mise en page inédite), dis-le explicitement dans assistant_message et indique ce que tu as fait de plus proche.
 """
 
 

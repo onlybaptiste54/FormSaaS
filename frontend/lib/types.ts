@@ -1,4 +1,20 @@
 export type Field = { id: string; label: string; type: string; required?: boolean; options?: string[]; scale?: number; placeholder?: string };
+export type FormStyle = {
+  page_from: string;
+  page_to: string;
+  surface: string;
+  surface_alpha: number;
+  border: string;
+  border_alpha: number;
+  ink: string;
+  ink_soft: string;
+  accent: string;
+  accent_ink: string;
+  blur_px: number;
+  radius_px: number;
+  glow: number;
+  font: "sans" | "grotesk" | "serif" | "mono";
+};
 export type FormDesign = {
   layout: "card" | "split" | "minimal";
   background: "warm" | "mist" | "white" | "ink";
@@ -7,6 +23,7 @@ export type FormDesign = {
   field_style: "outline" | "filled" | "underline";
   button_style: "solid" | "outline" | "soft";
   heading_align: "left" | "center";
+  style?: FormStyle;
 };
 export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; thank_you: Record<string, string>; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
 export type Stats = { campaigns: number; active: number; responses: number; week_responses: number; conversion: number; daily: { date: string; count: number }[]; sources: { name: string; count: number }[]; recent: { id: string; campaign: string; name: string; source: string; created_at: string }[] };
