@@ -1,3 +1,7 @@
+import json
+
+import httpx
+
 from app.luna import generate_campaign
 
 
@@ -14,3 +18,50 @@ def test_contact_generation_understands_urgency():
     ids = [field["id"] for field in campaign["fields"]]
     assert "urgent" in ids
     assert campaign["kind"] == "contact"
+
+
+def test_openai_generation_uses_structured_output_and_safe_identity():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        sent_input = json.loads(payload["input"])
+        assert request.headers["authorization"] == "Bearer test-key"
+        assert payload["store"] is False
+        assert payload["text"]["format"]["type"] == "json_schema"
+        assert sent_input["identity"] == {
+            "name": "Atelier Test",
+            "sector": "Artisanat",
+            "tone": "Professionnel",
+            "primary_color": "#123456",
+            "accent_color": "#abcdef",
+        }
+        result = {
+            "name": "Demande dépannage",
+            "description": "Décrivez rapidement votre besoin de dépannage.",
+            "kind": "contact",
+            "fields": [
+                {"id": "nom", "label": "Nom", "type": "text", "required": True, "options": [], "scale": None, "placeholder": "Votre nom"},
+                {"id": "urgence", "label": "Est-ce urgent ?", "type": "radio", "required": True, "options": ["Oui", "Non"], "scale": None, "placeholder": None},
+            ],
+            "thank_you_title": "Merci {prenom} !",
+            "thank_you_message": "Votre demande a bien été transmise à notre équipe.",
+        }
+        return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(result)}]}]})
+
+    campaign = generate_campaign(
+        "Un formulaire de dépannage",
+        {
+            "name": "Atelier Test",
+            "sector": "Artisanat",
+            "tone": "Professionnel",
+            "primary_color": "#123456",
+            "accent_color": "#abcdef",
+            "siret": "NE-DOIT-PAS-PARTIR",
+            "dpo_email": "prive@example.test",
+        },
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert campaign["name"] == "Demande dépannage"
+    assert len(campaign["fields"]) == 3
+    assert campaign["fields"][-1]["type"] == "consent"

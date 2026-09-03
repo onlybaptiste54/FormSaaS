@@ -23,6 +23,9 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sillage}:${POSTGRES_PASSWORD:-sillage_dev}@db:5432/${POSTGRES_DB:-sillage}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-30}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -51,4 +54,3 @@ services:
 
 volumes:
   postgres_data:
-

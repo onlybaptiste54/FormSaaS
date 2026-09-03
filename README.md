@@ -31,7 +31,7 @@ Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour rep
 
 - Connexion sécurisée par jeton et rôles préparés côté données
 - Identité d’entreprise : juridique, palette, ton et contact DPO
-- Création par prompt avec Luna, sans builder visuel
+- Création par prompt avec Luna via l’API OpenAI Responses et sortie structurée
 - Génération adaptée aux contacts, sondages, événements et visites de chantier
 - Règle MOFU : 5 champs métier maximum, plus consentement
 - Gestion des campagnes : statut, visibilité, duplication et archivage
@@ -56,7 +56,7 @@ Le front est construit en mode `standalone` puis copié dans une image d’exéc
 
 ## Configuration
 
-Copier `.env.example` vers `.env` pour personnaliser les ports, le mot de passe PostgreSQL et surtout `SECRET_KEY` en production.
+Copier `.env.example` vers `.env` pour personnaliser les ports, le mot de passe PostgreSQL, `SECRET_KEY` et la clé OpenAI. `OPENAI_API_KEY` reste exclusivement côté API : ne jamais la préfixer par `NEXT_PUBLIC_`, la placer dans le frontend ou la committer.
 
 Variables principales :
 
@@ -68,6 +68,11 @@ Variables principales :
 | `POSTGRES_USER` | `sillage` |
 | `POSTGRES_PASSWORD` | `sillage_dev` |
 | `SECRET_KEY` | clé de développement à remplacer |
+| `OPENAI_API_KEY` | vide : Luna utilise le générateur local |
+| `OPENAI_MODEL` | `gpt-5.4-mini` |
+| `OPENAI_TIMEOUT_SECONDS` | `30` |
+
+Avec une clé configurée, Luna transmet à OpenAI uniquement le brief de campagne, le nom commercial, le secteur, le ton et les couleurs de marque. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont pas transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement lorsqu’aucune clé n’est configurée.
 
 ## Développement sans Docker
 
@@ -101,4 +106,4 @@ docker compose config
 
 ## Suite produit recommandée
 
-Les interfaces sont prêtes à accueillir les briques plus lourdes du cahier des charges : vrai fournisseur LLM pour Luna, WebSocket temps réel, QR codes dynamiques, exports PDF/XLSX, webhooks, synchronisation Google Sheets, PWA hors-ligne et serveur MCP. Elles n’ont volontairement pas été simulées par de faux connecteurs dans ce MVP.
+Les interfaces sont prêtes à accueillir les autres briques plus lourdes du cahier des charges : WebSocket temps réel, QR codes dynamiques, exports PDF/XLSX, webhooks, synchronisation Google Sheets, PWA hors-ligne et serveur MCP. Elles n’ont volontairement pas été simulées par de faux connecteurs dans ce MVP.

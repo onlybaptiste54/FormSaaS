@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
-from .luna import generate_campaign
+from .luna import LunaAPIError, generate_campaign
 from .models import Campaign, Company, FormResponse, User
 from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, SubmitResponse
 from .security import create_token, current_user, verify_password
@@ -35,6 +35,16 @@ def campaign_json(c: Campaign):
     return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
 
 
+def luna_identity(company: Company) -> dict:
+    return {
+        "name": company.name,
+        "sector": company.sector,
+        "tone": company.tone,
+        "primary_color": company.primary_color,
+        "accent_color": company.accent_color,
+    }
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -52,6 +62,16 @@ def login(data: LoginIn, db: Session = Depends(get_db)):
 def me(user: User = Depends(current_user)):
     c = user.company
     return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "company": {"id": c.id, "name": c.name, "legal_name": c.legal_name, "sector": c.sector, "siret": c.siret, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "tone": c.tone, "dpo_email": c.dpo_email}}
+
+
+@app.get("/api/luna/status")
+def luna_status(_: User = Depends(current_user)):
+    configured = bool(settings.openai_api_key)
+    return {
+        "configured": configured,
+        "provider": "openai" if configured else "local",
+        "model": settings.openai_model if configured else None,
+    }
 
 
 @app.patch("/api/company")
@@ -88,7 +108,16 @@ def list_campaigns(archived: bool = False, db: Session = Depends(get_db), user: 
 
 @app.post("/api/campaigns", status_code=201)
 def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    generated = generate_campaign(data.prompt, user.company.name)
+    try:
+        generated = generate_campaign(
+            data.prompt,
+            luna_identity(user.company),
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
     campaign = Campaign(company_id=user.company_id, creator_id=user.id, **generated)
     db.add(campaign)
     db.commit()
@@ -184,4 +213,3 @@ def submit(slug: str, data: SubmitResponse, request: Request, db: Session = Depe
     db.add(row)
     db.commit()
     return {"id": row.id, "thank_you": campaign.thank_you}
-
