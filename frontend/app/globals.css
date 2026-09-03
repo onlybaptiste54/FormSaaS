@@ -119,3 +119,26 @@ input:focus,textarea:focus,select:focus{border-color:var(--brand);box-shadow:0 0
 @media(max-width:720px){.editor-toolbar{align-items:flex-start}.editor-toolbar .button{padding:0 10px}.editor-canvas{padding:24px 12px}.editor-form-card{padding-left:24px;padding-right:24px}.form-design.design-layout-split:not(.thank-you-card){display:block}.form-design.design-layout-split:not(.thank-you-card) .public-fields,.form-design.design-layout-split:not(.thank-you-card) .editor-fields{margin-top:26px}.luna-chat-panel{height:560px}}
 @media(max-width:570px){.page-header{display:grid}.page-actions,.page-actions>.button{width:100%}.metric-grid,.metric-grid-3,.template-grid{grid-template-columns:1fr 1fr}.metric-card{padding:17px}.metric-card>strong{font-size:28px}.metric-card .metric-icon{display:none}.toolbar{display:grid}.search-box{min-width:0;width:100%}.segment-control{height:40px}.segment-control button{flex:1}.split-section{grid-template-columns:1fr}.creation-top .step-indicator{display:none}.luna-stage{margin-top:5vh}.prompt-box textarea{font-size:14px}.preview-notice{align-items:flex-start;display:grid}.browser-bar span{min-width:0;flex:1}.embedded-form{margin-top:32px}.detail-actions .button-secondary{display:none}.campaign-title h1{font-size:31px}.title-line{align-items:flex-start;flex-wrap:wrap}.response-table-head,.response-table-row{grid-template-columns:1fr auto}.response-table-head span:nth-child(2),.response-table-row>.badge{display:none}.share-hero{padding:28px 18px}.copy-field span{max-width:180px}.form-grid{grid-template-columns:1fr}.form-grid .full{grid-column:auto}.public-form-page{padding:20px 10px}.public-card{border-radius:13px}.template-grid{grid-template-columns:1fr}.metric-grid.metric-grid-3{grid-template-columns:1fr}.team-row,.team-head{grid-template-columns:1fr auto}.login-box h2{font-size:36px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* Style libre genere par Luna. Les variables --f-* sont posees par
+   formStyleVars() sur le conteneur de page. Sans style, aucune de ces regles
+   ne s'applique et le rendu historique est conserve. */
+.has-luna-style{background:linear-gradient(160deg,var(--f-page-from),var(--f-page-to));color:var(--f-ink);font-family:var(--f-font)}
+.has-luna-style .public-card,.has-luna-style .editor-form-card{background:rgb(var(--f-surface)/var(--f-surface-alpha));border:1px solid rgb(var(--f-border)/var(--f-border-alpha));border-radius:var(--f-radius);backdrop-filter:blur(var(--f-blur));-webkit-backdrop-filter:blur(var(--f-blur));box-shadow:0 24px 60px rgb(0 0 0/.35),0 0 calc(var(--f-glow)*70px) rgb(var(--f-accent-rgb)/calc(var(--f-glow)*.45));color:var(--f-ink);font-family:var(--f-font)}
+.has-luna-style h1,.has-luna-style h2,.has-luna-style strong,.has-luna-style label,.has-luna-style .public-field>label{color:var(--f-ink)}
+.has-luna-style p,.has-luna-style small,.has-luna-style footer,.has-luna-style .secure-note,.has-luna-style .public-consent span{color:var(--f-ink-soft)}
+.has-luna-style .eyebrow{color:var(--f-accent)}
+.has-luna-style .public-brand>span,.has-luna-style .editor-form-brand>span{background:rgb(var(--f-accent-rgb)/.18);color:var(--f-accent)}
+.has-luna-style input,.has-luna-style textarea,.has-luna-style select{background:rgb(var(--f-surface)/calc(var(--f-surface-alpha)*.55));border:1px solid rgb(var(--f-border)/var(--f-border-alpha));border-radius:calc(var(--f-radius)*.5);color:var(--f-ink);font-family:var(--f-font)}
+.has-luna-style input::placeholder,.has-luna-style textarea::placeholder{color:var(--f-ink-soft);opacity:.75}
+.has-luna-style input:focus,.has-luna-style textarea:focus,.has-luna-style select:focus{border-color:var(--f-accent);outline:0;box-shadow:0 0 0 3px rgb(var(--f-accent-rgb)/.25)}
+.has-luna-style select option{background:var(--f-page-to);color:var(--f-ink)}
+.has-luna-style .select-wrap svg{color:var(--f-ink-soft)}
+.has-luna-style .public-options button,.has-luna-style .public-rating button{background:rgb(var(--f-surface)/calc(var(--f-surface-alpha)*.55));border:1px solid rgb(var(--f-border)/var(--f-border-alpha));border-radius:calc(var(--f-radius)*.5);color:var(--f-ink);font-family:var(--f-font)}
+.has-luna-style .public-options button:hover,.has-luna-style .public-rating button:hover{border-color:var(--f-accent)}
+.has-luna-style .public-options button.selected,.has-luna-style .public-rating button.selected{background:var(--f-accent);border-color:var(--f-accent);color:var(--f-accent-ink)}
+.has-luna-style .public-consent input{accent-color:var(--f-accent)}
+.has-luna-style .public-submit{background:var(--f-accent);border:0;border-radius:calc(var(--f-radius)*.6);color:var(--f-accent-ink);font-family:var(--f-font);box-shadow:0 0 calc(var(--f-glow)*40px) rgb(var(--f-accent-rgb)/calc(var(--f-glow)*.55))}
+.has-luna-style .public-submit:hover{filter:brightness(1.08)}
+.has-luna-style .thanks-check{background:rgb(var(--f-accent-rgb)/.16);color:var(--f-accent)}
+.has-luna-style .form-error{color:var(--f-ink);background:rgb(var(--f-accent-rgb)/.12);border-radius:calc(var(--f-radius)*.4)}
