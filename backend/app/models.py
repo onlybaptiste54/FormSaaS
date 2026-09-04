@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -72,6 +72,24 @@ class Campaign(Base):
     company: Mapped[Company] = relationship(back_populates="campaigns")
     creator: Mapped[User] = relationship(back_populates="campaigns")
     responses: Mapped[list["FormResponse"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+
+
+class Template(Base):
+    __tablename__ = "templates"
+    __table_args__ = (UniqueConstraint("company_id", "source_key", name="uq_template_company_source"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    source_key: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(140))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(40), default="Contact")
+    fields: Mapped[list] = mapped_column(JSON, default=list)
+    design: Mapped[dict] = mapped_column(JSON, default=dict)
+    thank_you: Mapped[dict] = mapped_column(JSON, default=dict)
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class FormResponse(Base):

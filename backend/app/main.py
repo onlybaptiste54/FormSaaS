@@ -10,18 +10,18 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .database import Base, SessionLocal, engine, ensure_compatible_schema, get_db
-from .luna import LunaAPIError, default_design, generate_campaign, revise_campaign
-from .models import Campaign, Company, FormResponse, User
+from .database import SessionLocal, get_db, initialize_schema
+from .luna import LunaAPIError, default_design, generate_campaign, revise_campaign, slugify
+from .models import Campaign, Company, FormResponse, Template, User
 from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
 from .seed import seed
+from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_payload
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    ensure_compatible_schema()
+    initialize_schema()
     with SessionLocal() as db:
         seed(db)
     yield
@@ -34,6 +34,41 @@ app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.co
 def campaign_json(c: Campaign):
     responses = len(c.responses)
     return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
+
+
+def saved_template_json(template: Template):
+    return {
+        "id": template.id,
+        "key": template.source_key,
+        "name": template.name,
+        "category": template.category,
+        "description": template.description,
+        "fields": template.fields,
+        "field_count": len(template.fields),
+        "design": template.design or default_design(),
+        "thank_you": template.thank_you,
+        "uses": template.uses,
+        "created_at": template.created_at.isoformat(),
+        "updated_at": template.updated_at.isoformat(),
+    }
+
+
+def campaign_from_template(template: dict, user: User) -> Campaign:
+    category = template.get("category", "Contact")
+    kind = {"Contact": "contact", "Sondage": "survey", "Information": "information"}.get(category, "contact")
+    return Campaign(
+        company_id=user.company_id,
+        creator_id=user.id,
+        name=template["name"],
+        slug=slugify(template["name"]),
+        description=template["description"],
+        kind=kind,
+        status="draft",
+        visibility="private",
+        fields=campaign_fields(template["fields"], user.company.name),
+        design=template.get("design") or default_design(),
+        thank_you=template.get("thank_you") or template_payload(template)["thank_you"],
+    )
 
 
 def luna_identity(company: Company) -> dict:
@@ -105,6 +140,67 @@ def stats(db: Session = Depends(get_db), user: User = Depends(current_user)):
 def list_campaigns(archived: bool = False, db: Session = Depends(get_db), user: User = Depends(current_user)):
     query = select(Campaign).where(Campaign.company_id == user.company_id, Campaign.archived == archived).order_by(desc(Campaign.updated_at))
     return [campaign_json(c) for c in db.scalars(query).all()]
+
+
+@app.get("/api/library")
+def library(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    saved = db.scalars(select(Template).where(Template.company_id == user.company_id).order_by(desc(Template.updated_at))).all()
+    recent = db.scalars(select(Campaign).where(Campaign.company_id == user.company_id, Campaign.archived.is_(False)).order_by(desc(Campaign.updated_at)).limit(4)).all()
+    return {
+        "featured": [template_payload(template) for template in CURATED_TEMPLATES],
+        "saved": [saved_template_json(template) for template in saved],
+        "recent": [campaign_json(campaign) for campaign in recent],
+    }
+
+
+@app.post("/api/library/featured/{template_key}/save", status_code=201)
+def save_featured_template(template_key: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    source = curated_template(template_key)
+    if not source:
+        raise HTTPException(404, "Modèle introuvable")
+    existing = db.scalar(select(Template).where(Template.company_id == user.company_id, Template.source_key == template_key))
+    if existing:
+        return saved_template_json(existing)
+    payload = template_payload(source)
+    saved = Template(
+        company_id=user.company_id,
+        source_key=template_key,
+        name=payload["name"],
+        description=payload["description"],
+        category=payload["category"],
+        fields=payload["fields"],
+        design=payload["design"],
+        thank_you=payload["thank_you"],
+    )
+    db.add(saved)
+    db.commit()
+    db.refresh(saved)
+    return saved_template_json(saved)
+
+
+@app.post("/api/library/featured/{template_key}/use", status_code=201)
+def use_featured_template(template_key: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    source = curated_template(template_key)
+    if not source:
+        raise HTTPException(404, "Modèle introuvable")
+    campaign = campaign_from_template(template_payload(source), user)
+    db.add(campaign)
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/library/templates/{template_id}/use", status_code=201)
+def use_saved_template(template_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    template = db.get(Template, template_id)
+    if not template or template.company_id != user.company_id:
+        raise HTTPException(404, "Modèle introuvable")
+    campaign = campaign_from_template(saved_template_json(template), user)
+    template.uses += 1
+    db.add(campaign)
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
 
 
 @app.post("/api/campaigns", status_code=201)

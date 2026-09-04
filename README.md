@@ -43,7 +43,8 @@ Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour rep
 - Page de remerciement et tunnel à option unique
 - Dashboard : activité, sources, conversion et réponses récentes
 - Tableau des réponses et export CSV UTF-8
-- Bibliothèque de points de départ, équipe et paramètres
+- Bibliothèque unifiée : modèles populaires, collection d’entreprise, aperçus complets et campagnes récentes
+- Ajout idempotent d’un modèle public et création de campagne indépendante en un clic
 - Données de démonstration réalistes injectées au premier lancement
 
 ## Architecture

@@ -1,4 +1,5 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+let authRedirecting = false;
 
 export function getToken() {
   if (typeof window === "undefined") return null;
@@ -11,6 +12,13 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(`${API_URL}${path}`, { ...init, headers, cache: "no-store" });
+  if (response.status === 401 && path !== "/auth/login" && typeof window !== "undefined") {
+    localStorage.removeItem("sillage_token");
+    if (!authRedirecting) {
+      authRedirecting = true;
+      window.location.replace("/");
+    }
+  }
   if (!response.ok) {
     const data = await response.json().catch(() => ({ detail: "Une erreur est survenue" }));
     throw new Error(data.detail || "Une erreur est survenue");
@@ -20,4 +28,3 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export { API_URL };
-

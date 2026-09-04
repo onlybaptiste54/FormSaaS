@@ -13,7 +13,10 @@ export default function LoginPage() {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { if (getToken()) router.replace("/dashboard"); }, [router]);
+  useEffect(() => {
+    if (!getToken()) return;
+    api("/me").then(() => router.replace("/dashboard")).catch(() => undefined);
+  }, [router]);
   async function submit(e: FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try { const data = await api<{ access_token: string }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); localStorage.setItem("sillage_token", data.access_token); router.push("/dashboard"); }
