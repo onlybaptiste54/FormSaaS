@@ -2,6 +2,8 @@
 
 Sillage est un SaaS français de création et de diffusion de formulaires. L’utilisateur décrit sa campagne à Luna en langage naturel ; l’application prépare un formulaire court, cohérent avec la marque et conforme aux principes RGPD du cahier des charges.
 
+La documentation stratégique du projet — concept produit, étude de marché et business plan — est dans [`docs/`](docs/README.md).
+
 ## Démarrage rapide
 
 Prérequis : Docker Desktop avec Docker Compose v2.
