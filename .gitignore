@@ -1,6 +1,7 @@
 # Secrets and local configuration
-.env
-.env.*
+# `.env*` (pas `.env.*`) : le motif doit aussi attraper les copies sans point,
+# du type ".env copy", ".env backup" ou ".env (1)".
+.env*
 !.env.example
 *.pem
 *.key
