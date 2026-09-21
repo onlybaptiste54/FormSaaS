@@ -60,7 +60,7 @@ def test_contact_generation_understands_urgency():
 def test_openai_generation_uses_structured_output_and_safe_identity():
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
-        sent_input = json.loads(payload["input"])
+        sent_input = json.loads(payload["input"][0]["content"][0]["text"])
         assert request.headers["authorization"] == "Bearer test-key"
         assert payload["store"] is False
         assert payload["text"]["format"]["type"] == "json_schema"

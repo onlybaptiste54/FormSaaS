@@ -114,6 +114,7 @@ Contraintes impératives :
 - Contrainte non négociable : le contraste doit rester lisible. ink doit trancher franchement sur surface, et accent_ink sur accent.
 - N'utilise jamais de CSS, HTML, URL d'image ou valeur libre pour le design.
 - Le titre de remerciement peut contenir {prenom} si un champ de nom est présent.
+- Les images jointes sont des références visuelles fournies par l'entreprise : inspire-t'en, n'en extrais aucune donnée personnelle.
 - content.eyebrow est un sur-titre court en majuscules, submit_label le texte du bouton d'envoi, trust_note une phrase rassurante sur l'usage des données.
 """
 
@@ -135,6 +136,31 @@ Contraintes impératives :
 - Aucun CSS, HTML, script, URL d'image ni valeur hors du schéma.
 - Si la demande sort de ce que tu peux faire, renvoie l'opération ask et explique-le dans message.
 - message décrit en une phrase ce qui a été appliqué, sans jargon technique.
+"""
+
+
+class BrandProfile(BaseModel):
+    """Identité de marque déduite d'une charte : uniquement des valeurs validées."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    palette: list[str] = Field(min_length=2, max_length=6)
+    font: Literal["sans", "grotesk", "serif", "mono"]
+    tone: str = Field(min_length=3, max_length=60)
+    rules_do: list[str] = Field(max_length=5)
+    rules_avoid: list[str] = Field(max_length=5)
+    summary: str = Field(min_length=10, max_length=240)
+
+
+LUNA_BRAND_INSTRUCTIONS = """Tu es Luna, directrice artistique. On te montre la charte graphique d'une entreprise : logo, pages de charte ou capture du site.
+
+Déduis-en un profil de marque exploitable pour des formulaires :
+- palette : 2 à 6 couleurs hexadécimales réellement présentes, de la plus structurante à la plus secondaire.
+- font : la police de la liste qui s'approche le plus de celle de la marque.
+- tone : deux ou trois mots en français (par exemple « chaleureux et direct »).
+- rules_do et rules_avoid : consignes courtes et concrètes, en français, tirées de ce que tu vois.
+- summary : une phrase qui résume l'identité.
+N'invente rien qui ne soit pas visible. Ne décris aucune personne présente sur les images.
 """
 
 
@@ -224,6 +250,47 @@ def _generate_campaign_local(prompt: str, company_name: str) -> dict:
     }
 
 
+def analyze_brand(
+    images: list[str],
+    identity: str | dict,
+    *,
+    notes: str = "",
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Propose un profil de marque à partir d'images de charte, à valider ensuite."""
+    if not api_key:
+        raise LunaAPIError("Luna n'est pas connectée : renseignez la clé du service d'IA.")
+    if not images:
+        raise LunaAPIError("Ajoutez au moins une image de votre charte.")
+
+    safe_identity = _safe_identity(identity)
+    content: list[dict] = [{"type": "input_text", "text": json.dumps({"identity": safe_identity, "notes": notes}, ensure_ascii=False)}]
+    for image in images[:4]:
+        content.append({"type": "input_image", "image_url": _validate_screenshot(image), "detail": "high"})
+
+    request_payload = {
+        "model": model,
+        "instructions": LUNA_BRAND_INSTRUCTIONS,
+        "input": [{"role": "user", "content": content}],
+        "text": {"format": {"type": "json_schema", "name": "sillage_brand_profile", "strict": True, "schema": BrandProfile.model_json_schema()}},
+        "max_output_tokens": 600,
+        "store": False,
+        "safety_identifier": hashlib.sha256(str(safe_identity.get("name") or "sillage-user").encode()).hexdigest()[:32],
+    }
+
+    try:
+        profile = BrandProfile.model_validate_json(_output_text(_request_openai(
+            request_payload, api_key=api_key, timeout_seconds=timeout_seconds, transport=transport,
+        )))
+    except ValidationError as exc:
+        logger.warning("Luna brand analysis failed: %s", type(exc).__name__)
+        raise LunaAPIError("Luna n'a pas réussi à lire cette charte. Essayez avec une image plus lisible.") from exc
+    return profile.model_dump()
+
+
 def _company_name(identity: str | dict) -> str:
     if isinstance(identity, str):
         return identity
@@ -233,7 +300,7 @@ def _company_name(identity: str | dict) -> str:
 def _safe_identity(identity: str | dict) -> dict:
     if isinstance(identity, str):
         return {"name": identity}
-    allowed = ("name", "sector", "tone", "primary_color", "accent_color")
+    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand")
     return {key: identity[key] for key in allowed if identity.get(key)}
 
 
@@ -329,6 +396,8 @@ def generate_campaign(
     prompt: str,
     identity: str | dict,
     *,
+    context: str = "",
+    images: list[str] | None = None,
     api_key: str = "",
     model: str = "gpt-5.4-mini",
     timeout_seconds: float = 30.0,
@@ -341,10 +410,16 @@ def generate_campaign(
 
     identity_payload = _safe_identity(identity)
     safety_source = str(identity_payload.get("name") or "sillage-user")
+    brief = {"brief": prompt, "identity": identity_payload}
+    if context:
+        brief["context"] = context
+    content: list[dict] = [{"type": "input_text", "text": json.dumps(brief, ensure_ascii=False)}]
+    for image in (images or [])[:2]:
+        content.append({"type": "input_image", "image_url": _validate_screenshot(image), "detail": "high"})
     request_payload = {
         "model": model,
         "instructions": LUNA_INSTRUCTIONS,
-        "input": json.dumps({"brief": prompt, "identity": identity_payload}, ensure_ascii=False),
+        "input": [{"role": "user", "content": content}],
         "text": {
             "format": {
                 "type": "json_schema",
@@ -382,6 +457,8 @@ def _revision_request(state: dict, instruction: str, identity: dict, *, selectio
         "current_form": state,
         "identity": identity,
     }
+    if state.get("brief"):
+        user_context["brief_initial"] = state.pop("brief")
     if correction:
         user_context["correction_demandee"] = correction
     content = [{"type": "input_text", "text": json.dumps(user_context, ensure_ascii=False)}]

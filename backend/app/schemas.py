@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 
 from pydantic import AnyHttpUrl, BaseModel, EmailStr, Field, field_validator
@@ -10,6 +11,9 @@ class LoginIn(BaseModel):
 
 class CampaignCreate(BaseModel):
     prompt: str = Field(min_length=10, max_length=1200)
+    context: str = Field(default="", max_length=800)
+    images: list[str] = Field(default_factory=list, max_length=2)
+    use_brand: bool = True
 
 
 class ThankYou(BaseModel):
@@ -71,6 +75,30 @@ class SubmitResponse(BaseModel):
     consent: bool = False
 
 
+class BrandProfileIn(BaseModel):
+    palette: list[str] = Field(default_factory=list, max_length=6)
+    font: Literal["sans", "grotesk", "serif", "mono"] | None = None
+    tone: str | None = Field(default=None, max_length=60)
+    rules_do: list[str] = Field(default_factory=list, max_length=5)
+    rules_avoid: list[str] = Field(default_factory=list, max_length=5)
+    summary: str | None = Field(default=None, max_length=240)
+
+    @field_validator("palette")
+    @classmethod
+    def hex_only(cls, value: list[str]) -> list[str]:
+        for color in value:
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                raise ValueError("Les couleurs de la palette doivent être au format #RRGGBB")
+        return value
+
+
+class BrandAnalyzeRequest(BaseModel):
+    """Images de la charte, envoyees une fois pour en deduire un profil."""
+
+    images: list[str] = Field(min_length=1, max_length=4)
+    notes: str = Field(default="", max_length=400)
+
+
 class CompanyUpdate(BaseModel):
     name: str | None = None
     legal_name: str | None = None
@@ -81,3 +109,13 @@ class CompanyUpdate(BaseModel):
     accent_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     tone: str | None = None
     dpo_email: EmailStr | None = None
+    # Data URL d'image, 200 Ko maximum : le navigateur redimensionne avant l'envoi.
+    logo: str | None = Field(default=None, max_length=280_000)
+    brand: BrandProfileIn | None = None
+
+    @field_validator("logo")
+    @classmethod
+    def image_data_url(cls, value: str | None) -> str | None:
+        if value and not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", value):
+            raise ValueError("Le logo doit être une image PNG, JPEG ou WebP")
+        return value

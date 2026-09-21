@@ -19,7 +19,7 @@ export type RendererMode = "edit" | "public" | "thumb";
 
 type Props = {
   form: RenderableForm;
-  company: { name: string; legal_name?: string; address?: string; dpo_email?: string };
+  company: { name: string; legal_name?: string; address?: string; dpo_email?: string; logo?: string };
   mode: RendererMode;
   view?: "form" | "thanks";
   values?: Record<string, string | number>;
@@ -52,6 +52,10 @@ function monogram(name: string) {
 export function FormRenderer({ form, company, mode, view = "form", values = {}, consent = false, errors = {}, busy = false, error, onChange, onConsent, onSubmit }: Props) {
   const interactive = mode === "public";
   const content = { ...FALLBACK_CONTENT, ...form.content };
+  const brand = <div className="public-brand" data-luna-id="brand">
+    {company.logo ? <img src={company.logo} alt={company.name}/> : <span>{monogram(company.name)}</span>}
+    <strong>{company.name}</strong>
+  </div>;
   const cardClass = `public-card ${designClassNames(form.design)}`;
   const legal = <footer data-luna-id="footer">
     {company.legal_name || company.name}{company.address ? ` · ${company.address}` : ""}
@@ -61,7 +65,7 @@ export function FormRenderer({ form, company, mode, view = "form", values = {}, 
   if (view === "thanks") {
     const thanks = form.thank_you || {};
     return <div className={`${cardClass} thank-you-card`} data-luna-id="card">
-      <div className="public-brand" data-luna-id="brand"><span>{monogram(company.name)}</span><strong>{company.name}</strong></div>
+      {brand}
       <div className="thanks-check"><Check/></div>
       <h1 data-luna-id="thanks.title">{thankYouTitle(thanks.title, values)}</h1>
       <p data-luna-id="thanks.message">{thanks.message}</p>
@@ -72,7 +76,7 @@ export function FormRenderer({ form, company, mode, view = "form", values = {}, 
   }
 
   const body = <>
-    <div className="public-brand" data-luna-id="brand"><span>{monogram(company.name)}</span><strong>{company.name}</strong></div>
+    {brand}
     <header>
       <p className="eyebrow" data-luna-id="eyebrow">{content.eyebrow}</p>
       <h1 data-luna-id="title">{form.name}</h1>

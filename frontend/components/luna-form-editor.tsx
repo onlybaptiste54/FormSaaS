@@ -67,7 +67,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
 
   const draft = editingState(campaign);
   const hasDraft = Boolean(campaign.draft);
-  const company = { name: me?.company.name || "Votre entreprise" };
+  const company = { name: me?.company.name || "Votre entreprise", logo: me?.company.logo };
 
   const loadVersions = useCallback(() => {
     void api<Version[]>(`/campaigns/${campaign.id}/versions`).then(setVersions).catch(() => undefined);

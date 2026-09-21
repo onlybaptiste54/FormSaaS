@@ -14,7 +14,7 @@ type PublicCampaign = {
   content: FormContent;
   thank_you: Record<string, string>;
   status: string;
-  company: { name: string; legal_name: string; address: string; primary_color: string; accent_color: string; dpo_email: string };
+  company: { name: string; legal_name: string; address: string; primary_color: string; accent_color: string; dpo_email: string; logo: string };
 };
 
 export default function PublicForm({ params }: { params: Promise<{ slug: string }> }) {

@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .luna import LunaAPIError, default_content, default_design, generate_campaign, revise_campaign, slugify
+from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, revise_campaign, slugify
 from .models import Campaign, CampaignVersion, Company, FormResponse, Template, User
-from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, LoginIn, LunaRefineRequest, SubmitResponse
+from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
 from .seed import seed
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
@@ -123,12 +123,14 @@ def luna_history(campaign: Campaign) -> list[dict]:
 
 
 def luna_identity(company: Company) -> dict:
+    """Ce que Luna sait de la marque : rien de personnel, rien de juridique."""
     return {
         "name": company.name,
         "sector": company.sector,
         "tone": company.tone,
         "primary_color": company.primary_color,
         "accent_color": company.accent_color,
+        "brand": company.brand or {},
     }
 
 
@@ -148,7 +150,7 @@ def login(data: LoginIn, db: Session = Depends(get_db)):
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
     c = user.company
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "company": {"id": c.id, "name": c.name, "legal_name": c.legal_name, "sector": c.sector, "siret": c.siret, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "tone": c.tone, "dpo_email": c.dpo_email}}
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "company": {"id": c.id, "name": c.name, "legal_name": c.legal_name, "sector": c.sector, "siret": c.siret, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "tone": c.tone, "dpo_email": c.dpo_email, "logo": c.logo, "brand": c.brand or {}}}
 
 
 @app.get("/api/luna/status")
@@ -167,6 +169,22 @@ def update_company(data: CompanyUpdate, db: Session = Depends(get_db), user: Use
         setattr(user.company, key, value)
     db.commit()
     return me(user)
+
+
+@app.post("/api/company/brand/analyze")
+def analyze_company_brand(data: BrandAnalyzeRequest, user: User = Depends(current_user)):
+    """Propose un profil de marque : rien n'est enregistre tant qu'il n'est pas valide."""
+    try:
+        return analyze_brand(
+            data.images,
+            luna_identity(user.company),
+            notes=data.notes,
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @app.get("/api/stats")
@@ -263,16 +281,21 @@ def use_saved_template(template_id: str, db: Session = Depends(get_db), user: Us
 @app.post("/api/campaigns", status_code=201)
 def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     try:
+        identity = luna_identity(user.company)
+        if not data.use_brand:
+            identity = {**identity, "brand": {}}
         generated = generate_campaign(
             data.prompt,
-            luna_identity(user.company),
+            identity,
+            context=data.context,
+            images=data.images,
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             timeout_seconds=settings.openai_timeout_seconds,
         )
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
-    campaign = Campaign(company_id=user.company_id, creator_id=user.id, **generated)
+    campaign = Campaign(company_id=user.company_id, creator_id=user.id, brief={"prompt": data.prompt, "context": data.context}, **generated)
     db.add(campaign)
     db.commit()
     db.refresh(campaign)
@@ -308,7 +331,7 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     state = editing_state(campaign)
     try:
         revision = revise_campaign(
-            {**state, "kind": campaign.kind},
+            {**state, "kind": campaign.kind, "brief": campaign.brief or {}},
             data.instruction,
             luna_identity(user.company),
             selection={
@@ -445,7 +468,7 @@ def public_campaign(slug: str, db: Session = Depends(get_db)):
     if not campaign:
         raise HTTPException(404, "Formulaire introuvable")
     c = campaign.company
-    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "content": campaign.content or default_content(campaign.kind), "thank_you": campaign.thank_you, "status": campaign.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
+    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "content": campaign.content or default_content(campaign.kind), "thank_you": campaign.thank_you, "status": campaign.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email, "logo": c.logo}}
 
 
 @app.post("/api/public/{slug}/visit", status_code=204)
