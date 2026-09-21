@@ -740,3 +740,24 @@ to{opacity:1;transform:translateY(0)}}
 .health-card li.todo{color:var(--amber)}
 .health-card li svg{flex-shrink:0}
 .detail-grid{align-items:start}
+
+/* Retours : champ de saisie pleine largeur, images jointes, taille du logo */
+textarea{width:100%}
+.chat-attachments{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
+.chat-attachments>span{position:relative;width:52px;height:52px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.chat-attachments img{width:100%;height:100%;object-fit:cover}
+.chat-attachments>span button{position:absolute;top:2px;right:2px;width:16px;height:16px;border:0;border-radius:50%;background:rgba(23,33,27,.78);color:#fff;display:flex;align-items:center;justify-content:center}
+.chat-attach{width:52px;height:52px;border:1px dashed var(--line);border-radius:8px;display:grid;place-items:center;color:var(--ink-soft);cursor:pointer}
+.chat-attach:hover{border-color:var(--brand);color:var(--brand)}
+.public-brand.brand-small img,.public-brand.brand-small>span{width:28px;height:28px}
+.public-brand.brand-large img,.public-brand.brand-large>span{width:56px;height:56px}
+.public-brand.brand-large strong{font-size:15px}
+.editor-canvas [data-luna-id="brand"]{cursor:pointer}
+.creation-basics{display:grid;gap:16px;text-align:left}
+.creation-basics label{display:grid;gap:7px;font-size:13px;font-weight:650}
+.creation-basics label small{font-weight:500;color:var(--ink-soft)}
+.creation-basics input{height:46px}
+.creation-basics textarea{min-height:88px;padding-top:12px}
+.step-indicator span.done{color:var(--brand)}
+.back-link{border:0;background:transparent}
+.step-indicator span{width:auto;height:26px;border-radius:99px;padding:0 12px;white-space:nowrap;font-size:11px}

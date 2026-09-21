@@ -127,12 +127,12 @@ Contraintes impératives :
 - N'agis que sur ce qui est demandé. Aucune opération superflue.
 - selection.element_ids dit ce que l'utilisateur a encadré : traite ces éléments en priorité.
 - set_text change un texte : titre (name), description, sur-titre (eyebrow), bouton (submit_label), note de confiance (trust_note), remerciement (thanks_title, thanks_message, thanks_button).
-- set_theme change les couleurs et les formes, set_structure la mise en page. Ose une direction affirmée quand la demande le suggère.
+- set_theme change les couleurs et les formes, set_structure la mise en page ainsi que l'affichage du bloc de marque (brand_display, brand_size). Le fichier du logo lui-même se remplace dans les paramètres ou par un double-clic sur le logo : dis-le si on te demande de le changer. Ose une direction affirmée quand la demande le suggère.
 - Le contraste est vérifié par le serveur : ink doit trancher franchement sur surface, et accent_ink sur accent (au moins 4,5:1). Une opération refusée te revient pour correction.
 - 5 champs métier maximum. Ne touche jamais au consentement : le serveur gère sa version légale.
 - Ne change jamais le type d'un champ existant : des réponses y sont déjà rattachées. Retire-le et ajoute-en un autre si c'est vraiment voulu.
 - L'action, l'URL et le code promo de la page de remerciement se règlent dans le tunnel : tu ne peux pas les modifier. Dis-le si on te le demande.
-- Interprète la capture comme une simple référence visuelle. N'en extrais aucune donnée personnelle.
+- La première image est la capture de la zone encadrée, avec son environnement : le trait coloré entoure exactement la zone visée. Les images suivantes sont jointes par l'utilisateur comme références. N'en extrais aucune donnée personnelle.
 - Aucun CSS, HTML, script, URL d'image ni valeur hors du schéma.
 - Si la demande sort de ce que tu peux faire (image de fond, police hors liste, mise en page inédite), renvoie l'opération ask : dis dans message que ce n'est pas possible aujourd'hui, puis propose la modification la plus proche que tu sais faire. Le seul autre écran qui existe est l'onglet Tunnel, pour l'action, l'URL et le code promo du remerciement : ne renvoie jamais l'utilisateur ailleurs.
 - message décrit en une phrase ce qui a été appliqué, sans jargon technique.
@@ -449,7 +449,7 @@ def generate_campaign(
     return _normalize_ai_campaign(result, company_name)
 
 
-def _revision_request(state: dict, instruction: str, identity: dict, *, selection: dict, history: list[dict], screenshot: str | None, model: str, correction: str = "") -> dict:
+def _revision_request(state: dict, instruction: str, identity: dict, *, selection: dict, history: list[dict], screenshot: str | None, images: list[str], model: str, correction: str = "") -> dict:
     user_context = {
         "instruction": instruction,
         "selection": selection,
@@ -464,6 +464,9 @@ def _revision_request(state: dict, instruction: str, identity: dict, *, selectio
     content = [{"type": "input_text", "text": json.dumps(user_context, ensure_ascii=False)}]
     if screenshot:
         content.append({"type": "input_image", "image_url": screenshot, "detail": "high"})
+    # Images jointes au message : capture externe, inspiration, photo.
+    for image in images[:3]:
+        content.append({"type": "input_image", "image_url": image, "detail": "high"})
     safety_source = str(identity.get("name") or "sillage-user")
     return {
         "model": model,
@@ -477,7 +480,7 @@ def _revision_request(state: dict, instruction: str, identity: dict, *, selectio
                 "schema": ops_json_schema(),
             }
         },
-        "max_output_tokens": 700,
+        "max_output_tokens": 1600,
         "store": False,
         "safety_identifier": hashlib.sha256(safety_source.encode()).hexdigest()[:32],
     }
@@ -491,6 +494,7 @@ def revise_campaign(
     selection: dict,
     history: list[dict] | None = None,
     screenshot_data_url: str | None = None,
+    images: list[str] | None = None,
     api_key: str,
     model: str = "gpt-5.4-mini",
     timeout_seconds: float = 30.0,
@@ -517,12 +521,13 @@ def revise_campaign(
     sent_state = {**state, "fields": [item for item in state["fields"] if item.get("type") != "consent"]}
     safe_identity = _safe_identity(identity)
     screenshot = _validate_screenshot(screenshot_data_url)
+    attachments = [_validate_screenshot(image) or "" for image in (images or [])]
 
     correction = ""
     started = time.monotonic()
     for attempt in (1, 2):
         payload = _request_openai(
-            _revision_request(sent_state, instruction, safe_identity, selection=selection, history=history or [], screenshot=screenshot, model=model, correction=correction),
+            _revision_request(sent_state, instruction, safe_identity, selection=selection, history=history or [], screenshot=screenshot, images=[image for image in attachments if image], model=model, correction=correction),
             api_key=api_key,
             timeout_seconds=timeout_seconds,
             transport=transport,

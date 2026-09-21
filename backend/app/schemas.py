@@ -11,6 +11,8 @@ class LoginIn(BaseModel):
 
 class CampaignCreate(BaseModel):
     prompt: str = Field(min_length=10, max_length=1200)
+    name: str = Field(default="", max_length=90)
+    description: str = Field(default="", max_length=260)
     context: str = Field(default="", max_length=800)
     images: list[str] = Field(default_factory=list, max_length=2)
     use_brand: bool = True
@@ -63,9 +65,11 @@ class LunaRefineRequest(BaseModel):
 
     instruction: str = Field(min_length=3, max_length=800)
     element_ids: list[str] = Field(default_factory=list, max_length=30)
-    selection_label: str = Field(default="Formulaire complet", max_length=140)
+    selection_label: str = Field(default="Formulaire complet", max_length=400)
     view: Literal["form", "thanks"] = "form"
     screenshot_data_url: str | None = Field(default=None, max_length=4_000_000)
+    # Images jointes par l'utilisateur : capture, inspiration, photo de charte.
+    images: list[str] = Field(default_factory=list, max_length=3)
 
 
 class SubmitResponse(BaseModel):

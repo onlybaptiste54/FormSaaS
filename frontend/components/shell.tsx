@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, BookOpen, CircleHelp, FileText, LayoutDashboard, LogOut, Menu, Plus, Settings, Users, X } from "lucide-react";
@@ -18,9 +18,15 @@ const items = [
 
 /** Profil charge une seule fois pour toute la zone connectee. */
 const MeContext = createContext<Me | null>(null);
+const RefreshMeContext = createContext<() => Promise<void>>(async () => {});
 
 export function useMe() {
   return useContext(MeContext);
+}
+
+/** A appeler quand l'identite change ailleurs que dans les parametres. */
+export function useRefreshMe() {
+  return useContext(RefreshMeContext);
 }
 
 export function initials(value: string | undefined) {
@@ -34,6 +40,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [open, setOpen] = useState(false);
 
+  const refresh = useCallback(async () => {
+    setMe(await api<Me>("/me"));
+  }, []);
+
   useEffect(() => {
     api<Me>("/me").then(setMe).catch(() => router.replace("/"));
   }, [router]);
@@ -41,7 +51,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   function logout() { localStorage.removeItem("sillage_token"); router.replace("/"); }
 
   return (
-    <MeContext.Provider value={me}>
+    <MeContext.Provider value={me}><RefreshMeContext.Provider value={refresh}>
       <div className="app-shell">
         <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
           <div className="sidebar-head"><Logo /><button className="icon-button sidebar-close" onClick={() => setOpen(false)} aria-label="Fermer"><X size={20} /></button></div>
@@ -65,7 +75,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
-    </MeContext.Provider>
+    </RefreshMeContext.Provider></MeContext.Provider>
   );
 }
 

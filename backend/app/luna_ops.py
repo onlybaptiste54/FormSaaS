@@ -108,6 +108,10 @@ class SetStructure(Strict):
     field_style: Literal["outline", "filled", "underline"] | None
     button_style: Literal["solid", "outline", "soft"] | None
     heading_align: Literal["left", "center"] | None
+    # Bloc de marque : le fichier du logo se change dans les paramètres,
+    # mais sa présence et sa taille se pilotent ici.
+    brand_display: Literal["logo_and_name", "logo", "name", "hidden"] | None
+    brand_size: Literal["small", "medium", "large"] | None
 
 
 class Ask(Strict):
@@ -239,8 +243,11 @@ def apply_ops(state: dict, ops: list[Operation]) -> tuple[dict, list[str]]:
 
         elif isinstance(operation, SetStructure):
             for key, value in operation.model_dump(exclude={"op"}).items():
-                if value is not None:
-                    result["design"][key] = value
+                if value is None:
+                    continue
+                result["design"][key] = value
+                if key.startswith("brand_"):
+                    touched.append("brand")
             touched.append("card")
 
     # Le consentement reste la version controlee par le serveur, toujours en dernier.

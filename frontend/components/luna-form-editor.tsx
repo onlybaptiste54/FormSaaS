@@ -1,11 +1,12 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, LoaderCircle, Monitor, MousePointer2, Send, Smartphone, Sparkles, Undo2, X } from "lucide-react";
+import { Check, ImagePlus, LoaderCircle, Monitor, MousePointer2, Send, Smartphone, Sparkles, Undo2, X } from "lucide-react";
 import { FormRenderer, FormStage } from "@/components/form-renderer";
-import { useMe } from "@/components/shell";
+import { useMe, useRefreshMe } from "@/components/shell";
 import { api } from "@/lib/api";
 import { captureRegion } from "@/lib/capture";
+import { readImageAsDataUrl } from "@/lib/image";
 import type { Campaign, Field, FormContent } from "@/lib/types";
 
 type Version = { id: string; source: string; instruction: string; message: string; created_at: string };
@@ -44,6 +45,41 @@ function selectionLabel(ids: string[], fields: Field[]) {
   return names.slice(0, 3).join(", ") + (names.length > 3 ? "…" : "");
 }
 
+/**
+ * Elements reellement vises par le cadre.
+ *
+ * Un simple croisement ne suffit pas : encadrer le titre touchait aussi le
+ * logo et la carte entiere. On ne garde donc qu'un element majoritairement
+ * couvert par le cadre, et on ecarte ses conteneurs des qu'un element plus
+ * precis est retenu.
+ */
+function elementsInside(canvas: HTMLElement, rect: Rect): string[] {
+  const bounds = canvas.getBoundingClientRect();
+  const candidates: { id: string; element: HTMLElement; area: number }[] = [];
+
+  canvas.querySelectorAll<HTMLElement>("[data-luna-id]").forEach(element => {
+    const box = element.getBoundingClientRect();
+    const x = box.left - bounds.left;
+    const y = box.top - bounds.top;
+    const overlap = Math.max(0, Math.min(x + box.width, rect.x + rect.width) - Math.max(x, rect.x))
+      * Math.max(0, Math.min(y + box.height, rect.y + rect.height) - Math.max(y, rect.y));
+    const area = box.width * box.height;
+    if (!area) return;
+    // Retenu si le cadre couvre l'essentiel de l'element, ou si l'element
+    // occupe a lui seul l'essentiel du cadre (cas d'un clic serre a l'interieur).
+    const covered = overlap / area;
+    const fills = overlap / Math.max(1, rect.width * rect.height);
+    if (covered >= 0.6 || (fills >= 0.75 && covered >= 0.25)) candidates.push({ id: element.dataset.lunaId!, element, area });
+  });
+
+  if (!candidates.length) return ["card"];
+  const precise = candidates.filter(candidate =>
+    !candidates.some(other => other !== candidate && candidate.element.contains(other.element)),
+  );
+  const kept = (precise.length ? precise : candidates).sort((a, b) => a.area - b.area);
+  return [...new Set(kept.map(candidate => candidate.id))];
+}
+
 export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campaign; onCampaignChange: (campaign: Campaign) => void }) {
   const me = useMe();
   const [configured, setConfigured] = useState(true);
@@ -57,6 +93,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [touched, setTouched] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<string[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   // Le rectangle vit aussi dans une ref : mousemove et mouseup peuvent tomber
@@ -64,6 +101,8 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   const dragRectRef = useRef<Rect | null>(null);
   const bubbleRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const refreshMe = useRefreshMe();
 
   const draft = editingState(campaign);
   const hasDraft = Boolean(campaign.draft);
@@ -134,25 +173,11 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     setDragRect(null);
     if (!rect || rect.width < 12 || rect.height < 12) return; // un simple clic n'est pas une selection
 
-    const canvas = canvasRef.current!;
-    const bounds = canvas.getBoundingClientRect();
-    const ids: string[] = [];
-    canvas.querySelectorAll<HTMLElement>("[data-luna-id]").forEach(element => {
-      const box = element.getBoundingClientRect();
-      const x = box.left - bounds.left;
-      const y = box.top - bounds.top;
-      if (x < rect.x + rect.width && x + box.width > rect.x && y < rect.y + rect.height && y + box.height > rect.y) {
-        ids.push(element.dataset.lunaId!);
-      }
-    });
-    // La carte entiere ne compte que si rien de plus precis n'est dans le cadre.
-    const precise = ids.filter(id => id !== "card");
-    const kept = precise.length ? precise : ids;
-
+    const kept = elementsInside(canvasRef.current!, rect);
     setSelection({ rect, ids: kept, label: selectionLabel(kept, draft.fields) });
     setTimeout(() => bubbleRef.current?.focus(), 30);
     try {
-      const dataUrl = await captureRegion(canvas, rect);
+      const dataUrl = await captureRegion(canvasRef.current!, rect);
       setSelection(current => current && { ...current, dataUrl });
     } catch {
       // Sans capture, la demande part quand meme avec les elements encadres.
@@ -164,6 +189,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     const text = instruction.trim();
     if (!text || busy) return;
     const current = selection;
+    const joined = attachments;
     setBusy(true);
     setError("");
     setPending(text);
@@ -175,13 +201,15 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
         body: JSON.stringify({
           instruction: text,
           element_ids: current?.ids || [],
-          selection_label: current?.label || "Formulaire complet",
+          selection_label: (current?.label || "Formulaire complet").slice(0, 200),
           view,
           screenshot_data_url: current?.dataUrl || null,
+          images: joined,
         }),
       });
       onCampaignChange(result.campaign);
       setTouched(result.touched);
+      setAttachments([]);
       loadVersions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Luna n’a pas pu appliquer la modification.");
@@ -234,11 +262,45 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     }
   }
 
+  async function attachFiles(files: File[]) {
+    if (!files.length) return;
+    try {
+      const added = await Promise.all(files.slice(0, 3).map(file => readImageAsDataUrl(file, 1400)));
+      setAttachments(current => [...current, ...added].slice(0, 3));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Image illisible");
+    }
+  }
+
+  /** Coller une capture d'ecran dans le chat ou dans la bulle. */
+  function onPaste(event: React.ClipboardEvent) {
+    const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    void attachFiles(files);
+  }
+
+  /** Le logo se remplace directement depuis l'apercu : il vaut pour tous les formulaires. */
+  async function replaceLogo(file: File) {
+    try {
+      const logo = await readImageAsDataUrl(file, 320);
+      await api("/company", { method: "PATCH", body: JSON.stringify({ logo }) });
+      await refreshMe();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Logo impossible à enregistrer");
+    }
+  }
+
   /** Double-clic : corriger un texte a la main, sans passer par Luna. */
   function editText(event: React.MouseEvent) {
     const element = (event.target as HTMLElement).closest<HTMLElement>("[data-luna-id]");
     const lunaId = element?.dataset.lunaId;
     if (!element || !lunaId) return;
+    if (lunaId === "brand") {
+      event.preventDefault();
+      logoInputRef.current?.click();
+      return;
+    }
     if (!["title", "description", "eyebrow", "submit", "trust"].includes(lunaId) && !lunaId.endsWith(".label")) return;
     event.preventDefault();
     const original = element.textContent || "";
@@ -264,7 +326,12 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     element.addEventListener("keydown", onKeyDown);
   }
 
-  return <div className="luna-editor">
+  return <div className="luna-editor" onPaste={onPaste}>
+    <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={event => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (file) void replaceLogo(file);
+    }}/>
     <div className="editor-bar">
       <span className={`draft-state ${hasDraft ? "pending" : ""}`}>{hasDraft ? "Brouillon non publié" : "À jour avec le formulaire en ligne"}</span>
       <div className="segment-control">
@@ -302,6 +369,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
               <form className="selection-bubble" style={{ left: selection.rect.x, top: selection.rect.y + selection.rect.height + 10 }} onSubmit={send} onMouseDown={event => event.stopPropagation()}>
                 <span>{selection.label}</span>
                 <textarea ref={bubbleRef} value={instruction} maxLength={800} placeholder="Que voulez-vous changer ici ?" onChange={event => setInstruction(event.target.value)} disabled={!configured || busy}/>
+                <Attachments images={attachments} onRemove={index => setAttachments(current => current.filter((_, position) => position !== index))} onAdd={attachFiles}/>
                 <div>
                   <button type="button" onClick={() => setSelection(null)}>Annuler</button>
                   <button className="button button-primary" disabled={!instruction.trim() || !configured || busy}>{busy ? <LoaderCircle className="spin" size={15}/> : <Send size={15}/>}Envoyer</button>
@@ -330,6 +398,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
         </div>
         <form className="luna-chat-composer" onSubmit={send}>
           <textarea value={instruction} maxLength={800} placeholder="Ex. Rends le bouton plus visible…" onChange={event => setInstruction(event.target.value)} disabled={!configured || busy}/>
+          <Attachments images={attachments} onRemove={index => setAttachments(current => current.filter((_, position) => position !== index))} onAdd={attachFiles}/>
           <div className="composer-actions">
             <span className="composer-target">{selection ? selection.label : "Formulaire complet"}</span>
             <button className="chat-send" disabled={!instruction.trim() || !configured || busy} aria-label="Envoyer à Luna"><Send size={17}/></button>
@@ -338,6 +407,24 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
         </form>
       </aside>
     </div>
+  </div>;
+}
+
+/** Images jointes a la demande : capture externe, inspiration, photo. */
+function Attachments({ images, onRemove, onAdd }: { images: string[]; onRemove: (index: number) => void; onAdd: (files: File[]) => void }) {
+  return <div className="chat-attachments">
+    {images.map((image, index) => <span key={image.slice(-24)}>
+      <img src={image} alt={`Image jointe ${index + 1}`}/>
+      <button type="button" onClick={() => onRemove(index)} aria-label="Retirer l’image"><X size={11}/></button>
+    </span>)}
+    {images.length < 3 && <label className="chat-attach" title="Joindre une image (ou collez une capture)">
+      <ImagePlus size={15}/>
+      <input type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={event => {
+        const files = Array.from(event.target.files || []);
+        event.target.value = "";
+        onAdd(files);
+      }}/>
+    </label>}
   </div>;
 }
 

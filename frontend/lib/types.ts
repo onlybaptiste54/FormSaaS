@@ -23,6 +23,8 @@ export type FormDesign = {
   button_style: "solid" | "outline" | "soft";
   heading_align: "left" | "center";
   style?: FormStyle;
+  brand_display?: "logo_and_name" | "logo" | "name" | "hidden";
+  brand_size?: "small" | "medium" | "large";
   /** Anciens tokens, encore presents en base : convertis en style au rendu. */
   background?: "warm" | "mist" | "white" | "ink";
   radius?: "subtle" | "rounded" | "pill";

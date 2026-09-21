@@ -318,6 +318,12 @@ def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: U
         )
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
+    # Le nom et la description saisis par l'utilisateur priment sur ceux de Luna.
+    if data.name.strip():
+        generated["name"] = data.name.strip()
+        generated["slug"] = slugify(data.name.strip())
+    if data.description.strip():
+        generated["description"] = data.description.strip()
     campaign = Campaign(company_id=user.company_id, creator_id=user.id, brief={"prompt": data.prompt, "context": data.context}, **generated)
     db.add(campaign)
     db.commit()
@@ -364,6 +370,7 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
             },
             history=luna_history(campaign),
             screenshot_data_url=data.screenshot_data_url,
+            images=data.images,
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             timeout_seconds=settings.openai_timeout_seconds,

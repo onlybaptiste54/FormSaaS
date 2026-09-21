@@ -52,9 +52,10 @@ function monogram(name: string) {
 export function FormRenderer({ form, company, mode, view = "form", values = {}, consent = false, errors = {}, busy = false, error, onChange, onConsent, onSubmit }: Props) {
   const interactive = mode === "public";
   const content = { ...FALLBACK_CONTENT, ...form.content };
-  const brand = <div className="public-brand" data-luna-id="brand">
-    {company.logo ? <img src={company.logo} alt={company.name}/> : <span>{monogram(company.name)}</span>}
-    <strong>{company.name}</strong>
+  const display = form.design?.brand_display || "logo_and_name";
+  const brand = display === "hidden" ? null : <div className={`public-brand brand-${form.design?.brand_size || "medium"}`} data-luna-id="brand">
+    {display !== "name" && (company.logo ? <img src={company.logo} alt={company.name}/> : <span>{monogram(company.name)}</span>)}
+    {display !== "logo" && <strong>{company.name}</strong>}
   </div>;
   const cardClass = `public-card ${designClassNames(form.design)}`;
   const legal = <footer data-luna-id="footer">
