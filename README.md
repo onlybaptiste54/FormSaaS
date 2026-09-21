@@ -1,6 +1,6 @@
 # Sillage
 
-Sillage est un SaaS français de création et de diffusion de formulaires. L’utilisateur décrit sa campagne à Luna en langage naturel ; l’application prépare un formulaire court, cohérent avec la marque et conforme aux principes RGPD du cahier des charges.
+Sillage est un SaaS français de création et de diffusion de formulaires. Une campagne regroupe les formulaires d’un client, d’un événement ou d’une opération. L’utilisateur décrit chaque formulaire à Luna en langage naturel ; l’application prépare un formulaire court, cohérent avec la marque et conforme aux principes RGPD du cahier des charges.
 
 La documentation stratégique du projet — concept produit, étude de marché et business plan — est dans [`docs/`](docs/README.md).
 
@@ -29,6 +29,8 @@ docker compose down
 
 Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour repartir de zéro, utiliser explicitement `docker compose down -v`.
 
+Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides.
+
 ## Fonctionnalités livrées
 
 - Connexion sécurisée par jeton et rôles préparés côté données
@@ -40,13 +42,15 @@ Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour rep
 - Édition directe des textes au double-clic, sans passer par l’IA
 - Brouillon séparé du formulaire en ligne, historique des versions et annulation par étape
 - Garde-fous serveur : 5 champs métier, identifiants et types conservés, contraste WCAG 4,5:1, tunnel intouchable
-- Gestion des campagnes : statut, visibilité, duplication, archivage et restauration
+- Trois niveaux : la campagne regroupe des formulaires, le formulaire porte le statut, le lien et les réponses
+- Bilan par campagne : nombre de formulaires, visites, conversion, meilleur formulaire et activité sur 7 jours
+- Gestion des formulaires : statut, visibilité, duplication, archivage et restauration
 - Formulaire public responsive, validation par champ, pré-remplissage et suivi par canal (`?source=`)
 - Consentement explicite non pré-coché, avec preuve : texte, date, IP et user-agent
 - Page de remerciement, bouton ou redirection, aperçu dans l’éditeur
-- Dashboard : activité, sources, conversion, brouillons à publier et réponses récentes
-- Tableau des réponses et export CSV UTF-8
-- Bibliothèque : sélection Sillage, collection d’entreprise, aperçus en rendu réel et campagnes récentes
+- Dashboard : campagnes, formulaires en ligne, activité, sources, conversion et réponses récentes
+- Boîte de réception transverse : filtres campagne, formulaire, source et période, recherche plein texte, détail avec preuve de consentement et export CSV UTF-8
+- Bibliothèque : sélection Sillage, collection d’entreprise, aperçus en rendu réel et choix de la campagne d’accueil
 - Diffusion : liens suivis par canal et code d’intégration à copier
 - Données de démonstration réalistes injectées au premier lancement
 
@@ -114,4 +118,4 @@ docker compose config
 
 Les interfaces sont prêtes à accueillir les autres briques plus lourdes du cahier des charges : WebSocket temps réel, QR codes dynamiques, exports PDF/XLSX, webhooks, synchronisation Google Sheets, PWA hors-ligne et serveur MCP. Elles n’ont volontairement pas été simulées par de faux connecteurs.
 
-Côté produit, les suites naturelles du chantier Luna sont une boîte de réception transverse pour les réponses, des variantes A/B arbitrées par la conversion, et un mode « une question par écran » pour le formulaire public.
+Côté produit, les suites naturelles sont la fusion des onglets Tunnel et Remerciement, une page Marque dédiée, des variantes A/B arbitrées par la conversion, et un mode « une question par écran » pour le formulaire public.

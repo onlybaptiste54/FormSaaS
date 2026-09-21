@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -54,10 +54,34 @@ class User(Base):
 
 
 class Campaign(Base):
+    """Dossier de travail : un client, un evenement, une operation. Contient des formulaires."""
+
     __tablename__ = "campaigns"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    creator_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(140))
+    client: Mapped[str] = mapped_column(String(140), default="")
+    objective: Mapped[str] = mapped_column(Text, default="")
+    starts_on: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    ends_on: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    company: Mapped[Company] = relationship(back_populates="campaigns")
+    creator: Mapped[User] = relationship(back_populates="campaigns")
+    forms: Mapped[list["Form"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="Form.created_at")
+
+
+class Form(Base):
+    """Le formulaire lui-meme : ce qu'on edite avec Luna et ce que voit un visiteur."""
+
+    __tablename__ = "forms"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
     creator_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     name: Mapped[str] = mapped_column(String(140))
     slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
@@ -78,26 +102,26 @@ class Campaign(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
-    company: Mapped[Company] = relationship(back_populates="campaigns")
-    creator: Mapped[User] = relationship(back_populates="campaigns")
-    responses: Mapped[list["FormResponse"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
-    versions: Mapped[list["CampaignVersion"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="CampaignVersion.created_at")
+    campaign: Mapped[Campaign] = relationship(back_populates="forms")
+    creator: Mapped[User] = relationship()
+    responses: Mapped[list["FormResponse"]] = relationship(back_populates="form", cascade="all, delete-orphan")
+    versions: Mapped[list["FormVersion"]] = relationship(back_populates="form", cascade="all, delete-orphan", order_by="FormVersion.created_at")
 
 
-class CampaignVersion(Base):
+class FormVersion(Base):
     """Etat du formulaire apres une etape d'edition : sert d'historique et d'annulation."""
 
-    __tablename__ = "campaign_versions"
+    __tablename__ = "form_versions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    form_id: Mapped[str] = mapped_column(ForeignKey("forms.id"), index=True)
     snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(20), default="luna")
     instruction: Mapped[str] = mapped_column(Text, default="")
     message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
-    campaign: Mapped[Campaign] = relationship(back_populates="versions")
+    form: Mapped[Form] = relationship(back_populates="versions")
 
 
 class Template(Base):
@@ -122,7 +146,7 @@ class FormResponse(Base):
     __tablename__ = "responses"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    form_id: Mapped[str] = mapped_column(ForeignKey("forms.id"), index=True)
     answers: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(40), default="Lien direct")
     promo_code: Mapped[str] = mapped_column(String(60), default="")
@@ -132,4 +156,4 @@ class FormResponse(Base):
     user_agent: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
-    campaign: Mapped[Campaign] = relationship(back_populates="responses")
+    form: Mapped[Form] = relationship(back_populates="responses")

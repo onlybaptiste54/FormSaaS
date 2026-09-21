@@ -7,15 +7,15 @@ import { useMe, useRefreshMe } from "@/components/shell";
 import { api } from "@/lib/api";
 import { captureRegion } from "@/lib/capture";
 import { readImageAsDataUrl } from "@/lib/image";
-import type { Campaign, Field, FormContent } from "@/lib/types";
+import type { Field, Form, FormContent } from "@/lib/types";
 
 type Version = { id: string; source: string; instruction: string; message: string; created_at: string };
 type Rect = { x: number; y: number; width: number; height: number };
 type Selection = { rect: Rect; ids: string[]; label: string; dataUrl?: string; capturing: boolean };
 
 /** Etat edite : le brouillon s'il existe, sinon le formulaire publie. */
-function editingState(campaign: Campaign): Campaign {
-  return { ...campaign, ...(campaign.draft || {}) };
+function editingState(form: Form): Form {
+  return { ...form, ...(form.draft || {}) };
 }
 
 /** Nom lisible d'un element du rendu, pour l'afficher a l'utilisateur. */
@@ -80,7 +80,7 @@ function elementsInside(canvas: HTMLElement, rect: Rect): string[] {
   return [...new Set(kept.map(candidate => candidate.id))];
 }
 
-export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campaign; onCampaignChange: (campaign: Campaign) => void }) {
+export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChange: (form: Form) => void }) {
   const me = useMe();
   const [configured, setConfigured] = useState(true);
   const [versions, setVersions] = useState<Version[]>([]);
@@ -105,13 +105,13 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   const logoInputRef = useRef<HTMLInputElement>(null);
   const refreshMe = useRefreshMe();
 
-  const draft = editingState(campaign);
-  const hasDraft = Boolean(campaign.draft);
+  const draft = editingState(form);
+  const hasDraft = Boolean(form.draft);
   const company = { name: me?.company.name || "Votre entreprise", logo: me?.company.logo };
 
   const loadVersions = useCallback(() => {
-    void api<Version[]>(`/campaigns/${campaign.id}/versions`).then(setVersions).catch(() => undefined);
-  }, [campaign.id]);
+    void api<Version[]>(`/forms/${form.id}/versions`).then(setVersions).catch(() => undefined);
+  }, [form.id]);
 
   useEffect(() => { void api<{ configured: boolean }>("/luna/status").then(data => setConfigured(data.configured)).catch(() => undefined); }, []);
   useEffect(() => { loadVersions(); }, [loadVersions]);
@@ -201,7 +201,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     setAttachments([]);
     setSelection(null);
     try {
-      const result = await api<{ message: string; campaign: Campaign; touched: string[] }>(`/campaigns/${campaign.id}/luna/refine`, {
+      const result = await api<{ message: string; form: Form; touched: string[] }>(`/forms/${form.id}/luna/refine`, {
         method: "POST",
         body: JSON.stringify({
           instruction: text,
@@ -212,7 +212,7 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
           images: joined,
         }),
       });
-      onCampaignChange(result.campaign);
+      onFormChange(result.form);
       setTouched(result.touched);
       loadVersions();
     } catch (err) {
@@ -229,8 +229,8 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     setBusy(true);
     setError("");
     try {
-      const updated = await api<Campaign>(`/campaigns/${campaign.id}${path}`, { method: "POST" });
-      onCampaignChange(updated);
+      const updated = await api<Form>(`/forms/${form.id}${path}`, { method: "POST" });
+      onFormChange(updated);
       loadVersions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action impossible");
@@ -259,8 +259,8 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     }
     if (!body) return;
     try {
-      const updated = await api<Campaign>(`/campaigns/${campaign.id}/draft`, { method: "PATCH", body: JSON.stringify(body) });
-      onCampaignChange(updated);
+      const updated = await api<Form>(`/forms/${form.id}/draft`, { method: "PATCH", body: JSON.stringify(body) });
+      onFormChange(updated);
       loadVersions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Modification impossible");
@@ -425,8 +425,8 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   </div>;
 }
 
-function accentColor(campaign: Campaign) {
-  return campaign.design?.style?.accent || "#2F6B4F";
+function accentColor(form: Form) {
+  return form.design?.style?.accent || "#2F6B4F";
 }
 
 /** Images jointes a la demande : capture externe, inspiration, photo. */

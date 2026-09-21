@@ -32,9 +32,26 @@ export type FormDesign = {
   background?: "warm" | "mist" | "white" | "ink";
   radius?: "subtle" | "rounded" | "pill";
 };
-export type CampaignHealth = { score: number; checks: { label: string; ok: boolean; hint: string }[] };
-export type CampaignDraft = Partial<Pick<Campaign, "name" | "description" | "fields" | "design" | "content" | "thank_you">>;
-export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; draft: CampaignDraft | null; health: CampaignHealth; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+export type FormHealth = { score: number; checks: { label: string; ok: boolean; hint: string }[] };
+export type FormDraft = Partial<Pick<Form, "name" | "description" | "fields" | "design" | "content" | "thank_you">>;
+/** Le formulaire : l'objet qu'on edite avec Luna et que voit un visiteur. */
+export type Form = { id: string; campaign_id: string; campaign_name: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; draft: FormDraft | null; health: FormHealth; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+/** La campagne : un dossier (un client, un evenement) qui regroupe des formulaires. */
+export type Campaign = { id: string; name: string; client: string; objective: string; starts_on: string | null; ends_on: string | null; forms: number; active: number; visits: number; responses: number; conversion: number; last_activity: string; archived: boolean; created_at: string; updated_at: string };
+export type CampaignStats = {
+  forms: number;
+  active: number;
+  visits: number;
+  responses: number;
+  conversion: number;
+  best: FormBreakdown | null;
+  breakdown: FormBreakdown[];
+  daily: { date: string; count: number }[];
+  sources: { name: string; count: number }[];
+};
+export type FormBreakdown = { id: string; name: string; status: string; visits: number; responses: number; conversion: number };
+export type ResponseRow = { id: string; form_id: string; form: string; campaign_id: string; campaign: string; answers: Record<string, string | number>; source: string; promo_code: string; consent: boolean; consent_text: string; ip_address: string; user_agent: string; created_at: string };
+export type ResponsePage = { items: ResponseRow[]; total: number; limit: number; offset: number; sources: string[] };
 export type LibraryTemplate = {
   id?: string;
   key: string;
@@ -52,8 +69,8 @@ export type LibraryTemplate = {
   created_at?: string;
   updated_at?: string;
 };
-export type LibraryData = { featured: LibraryTemplate[]; saved: LibraryTemplate[]; recent: Campaign[] };
-export type Stats = { campaigns: number; active: number; responses: number; week_responses: number; conversion: number; daily: { date: string; count: number }[]; sources: { name: string; count: number }[]; recent: { id: string; campaign: string; name: string; source: string; created_at: string }[] };
+export type LibraryData = { featured: LibraryTemplate[]; saved: LibraryTemplate[]; recent: Form[] };
+export type Stats = { campaigns: number; forms: number; active: number; drafts: number; responses: number; week_responses: number; conversion: number; daily: { date: string; count: number }[]; sources: { name: string; count: number }[]; recent: { id: string; form_id: string; form: string; campaign: string; name: string; source: string; created_at: string }[] };
 export type BrandProfile = {
   palette?: string[];
   font?: FormStyle["font"];

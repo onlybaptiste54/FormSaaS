@@ -1,4 +1,5 @@
 import re
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import AnyHttpUrl, BaseModel, EmailStr, Field, field_validator
@@ -10,12 +11,37 @@ class LoginIn(BaseModel):
 
 
 class CampaignCreate(BaseModel):
+    """La campagne est un dossier : aucune IA a ce niveau."""
+
+    name: str = Field(min_length=3, max_length=140)
+    client: str = Field(default="", max_length=140)
+    objective: str = Field(default="", max_length=600)
+    starts_on: date | None = None
+    ends_on: date | None = None
+
+
+class CampaignUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=3, max_length=140)
+    client: str | None = Field(default=None, max_length=140)
+    objective: str | None = Field(default=None, max_length=600)
+    starts_on: date | None = None
+    ends_on: date | None = None
+    archived: bool | None = None
+
+
+class FormCreate(BaseModel):
     prompt: str = Field(min_length=10, max_length=1200)
     name: str = Field(default="", max_length=90)
     description: str = Field(default="", max_length=260)
     context: str = Field(default="", max_length=800)
     images: list[str] = Field(default_factory=list, max_length=2)
     use_brand: bool = True
+
+
+class TemplateUse(BaseModel):
+    """Un modele s'utilise toujours dans une campagne existante."""
+
+    campaign_id: str = Field(min_length=1, max_length=36)
 
 
 class ThankYou(BaseModel):
@@ -38,7 +64,7 @@ class ThankYou(BaseModel):
         return value
 
 
-class CampaignUpdate(BaseModel):
+class FormUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     status: Literal["draft", "active"] | None = None

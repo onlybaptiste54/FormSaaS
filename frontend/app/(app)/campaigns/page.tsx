@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Archive, ArchiveRestore, Copy, ExternalLink, FileText, Plus, Search } from "lucide-react";
+import { Archive, ArchiveRestore, FolderOpen, Plus, Search } from "lucide-react";
 import { PageHeader } from "@/components/shell";
 import { Badge, EmptyState, ErrorState, Loading, Toast } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -11,9 +11,10 @@ import type { Campaign } from "@/lib/types";
 const filters = [
   { key: "all", label: "Toutes" },
   { key: "active", label: "Actives" },
-  { key: "draft", label: "Brouillons" },
   { key: "archived", label: "Archivées" },
 ];
+
+const shortDate = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short" });
 
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
@@ -33,9 +34,9 @@ export default function CampaignsPage() {
   useEffect(() => { load(); }, [archivedView]);
 
   const filtered = useMemo(() => (campaigns || []).filter(campaign =>
-    (filter === "all" || archivedView || campaign.status === filter) &&
-    `${campaign.name} ${campaign.description}`.toLowerCase().includes(query.toLowerCase()),
-  ), [campaigns, query, filter, archivedView]);
+    (filter !== "active" || campaign.active > 0) &&
+    `${campaign.name} ${campaign.client} ${campaign.objective}`.toLowerCase().includes(query.toLowerCase()),
+  ), [campaigns, query, filter]);
 
   function flash(text: string, undo?: () => void) {
     setNotice({ text, undo });
@@ -49,38 +50,31 @@ export default function CampaignsPage() {
     else flash(`« ${campaign.name} » restaurée`);
   }
 
-  async function duplicate(id: string) {
-    await api(`/campaigns/${id}/duplicate`, { method: "POST" });
-    load();
-    flash("Copie créée");
-  }
-
   return <div className="page-wrap">
-    <PageHeader eyebrow="GESTION" title="Campagnes" description="Créez, suivez et partagez tous vos formulaires." actions={<Link href="/campaigns/new" className="button button-primary"><Plus size={18}/>Créer une campagne</Link>}/>
+    <PageHeader eyebrow="GESTION" title="Campagnes" description="Chaque campagne regroupe les formulaires d’un client, d’un événement ou d’une opération." actions={<Link href="/campaigns/new" className="button button-primary"><Plus size={18}/>Créer une campagne</Link>}/>
     <div className="toolbar">
       <div className="search-box"><Search size={18}/><input placeholder="Rechercher une campagne…" value={query} onChange={event => setQuery(event.target.value)}/></div>
       <div className="segment-control">{filters.map(item => <button key={item.key} className={filter === item.key ? "selected" : ""} onClick={() => setFilter(item.key)}>{item.label}</button>)}</div>
     </div>
 
     {error ? <ErrorState message={error} onRetry={load}/> : campaigns === null ? <Loading/> : filtered.length === 0 ? (
-      <EmptyState icon={<FileText/>} title={archivedView ? "Aucune campagne archivée" : "Aucune campagne"} text={archivedView ? "Les campagnes que vous archivez seront rangées ici." : "Essayez une autre recherche ou créez votre première campagne."} action={!archivedView && <Link href="/campaigns/new" className="button button-primary">Créer maintenant</Link>}/>
+      <EmptyState icon={<FolderOpen/>} title={archivedView ? "Aucune campagne archivée" : "Aucune campagne"} text={archivedView ? "Les campagnes que vous archivez seront rangées ici." : "Créez une campagne, puis ajoutez-y autant de formulaires que nécessaire."} action={!archivedView && <Link href="/campaigns/new" className="button button-primary">Créer maintenant</Link>}/>
     ) : (
       <div className="campaign-table panel">
-        <div className="table-head"><span>Campagne</span><span>Statut</span><span>Réponses</span><span>Conversion</span><span>Mise à jour</span><span/></div>
+        <div className="table-head"><span>Campagne</span><span>Formulaires</span><span>Réponses</span><span>Conversion</span><span>Activité</span><span/></div>
         {filtered.map(campaign => <div className="table-row" key={campaign.id}>
-          <Link className="campaign-cell" href={`/campaigns/${campaign.id}`}><div className="campaign-icon"><FileText size={20}/></div><div><strong>{campaign.name}</strong><span>{campaign.description}</span></div></Link>
-          <span><Badge tone={campaign.status === "active" ? "green" : "amber"}>{campaign.status === "active" ? "Active" : "Brouillon"}</Badge></span>
+          <Link className="campaign-cell" href={`/campaigns/${campaign.id}`}><div className="campaign-icon"><FolderOpen size={20}/></div><div><strong>{campaign.name}</strong><span>{campaign.client || campaign.objective || "Sans client renseigné"}</span></div></Link>
+          <span className="campaign-forms-cell">
+            <strong>{campaign.forms}</strong>
+            {campaign.active > 0 ? <Badge tone="green">{campaign.active} en ligne</Badge> : <Badge tone="amber">Hors ligne</Badge>}
+          </span>
           <strong>{campaign.responses}</strong>
           <span>{campaign.conversion} %</span>
-          <span>{new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short" }).format(new Date(campaign.updated_at))}</span>
+          <span>{shortDate.format(new Date(campaign.last_activity))}</span>
           <div className="row-actions">
-            {archivedView ? (
-              <button className="icon-button" onClick={() => void setArchived(campaign, false)} title="Restaurer" aria-label={`Restaurer ${campaign.name}`}><ArchiveRestore size={17}/></button>
-            ) : <>
-              <a className="icon-button" href={`/forms/${campaign.slug}?preview=1`} target="_blank" title="Ouvrir" aria-label={`Ouvrir ${campaign.name}`}><ExternalLink size={17}/></a>
-              <button className="icon-button" onClick={() => void duplicate(campaign.id)} title="Dupliquer" aria-label={`Dupliquer ${campaign.name}`}><Copy size={17}/></button>
-              <button className="icon-button" onClick={() => void setArchived(campaign, true)} title="Archiver" aria-label={`Archiver ${campaign.name}`}><Archive size={17}/></button>
-            </>}
+            {archivedView
+              ? <button className="icon-button" onClick={() => void setArchived(campaign, false)} title="Restaurer" aria-label={`Restaurer ${campaign.name}`}><ArchiveRestore size={17}/></button>
+              : <button className="icon-button" onClick={() => void setArchived(campaign, true)} title="Archiver" aria-label={`Archiver ${campaign.name}`}><Archive size={17}/></button>}
           </div>
         </div>)}
       </div>

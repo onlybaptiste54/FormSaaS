@@ -2,233 +2,209 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowLeft, BarChart3, Check, Code2, Copy, Download, Eye, FileText, Globe2, Link2, MessageSquareText, Save, Send, Settings2, X } from "lucide-react";
-import { LunaFormEditor } from "@/components/luna-form-editor";
+import { useRouter } from "next/navigation";
+import { Archive, ArchiveRestore, ArrowLeft, BarChart3, Check, Copy, ExternalLink, FileText, LayoutTemplate, MessageSquareText, Plus, Save, Settings2 } from "lucide-react";
+import { FormRenderer, FormStage } from "@/components/form-renderer";
+import { ResponsesInbox } from "@/components/responses-inbox";
 import { useMe } from "@/components/shell";
-import { Badge, ErrorState, Loading } from "@/components/ui";
-import { API_URL, api } from "@/lib/api";
-import { thankYouTitle } from "@/lib/form-text";
-import type { Campaign } from "@/lib/types";
+import { Badge, EmptyState, ErrorState, Loading } from "@/components/ui";
+import { api } from "@/lib/api";
+import type { Campaign, CampaignStats, Form } from "@/lib/types";
+
+const longDate = new Intl.DateTimeFormat("fr-FR", { dateStyle: "long" });
+const shortDate = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+const weekday = new Intl.DateTimeFormat("fr-FR", { weekday: "short" });
 
 export default function CampaignDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [forms, setForms] = useState<Form[] | null>(null);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("overview");
-  const [saved, setSaved] = useState(false);
+  const [tab, setTab] = useState("forms");
 
   const load = () => {
     setError("");
-    api<Campaign>(`/campaigns/${id}`).then(setCampaign).catch(err => setError(err instanceof Error ? err.message : "Campagne introuvable"));
+    Promise.all([api<Campaign>(`/campaigns/${id}`), api<Form[]>(`/campaigns/${id}/forms`)])
+      .then(([data, list]) => { setCampaign(data); setForms(list); })
+      .catch(err => setError(err instanceof Error ? err.message : "Campagne introuvable"));
   };
-  useEffect(() => {
-    load();
-    if (new URLSearchParams(window.location.search).get("tab") === "form") setTab("form");
-  }, [id]);
-
-  async function publish() {
-    if (!campaign) return;
-    const updated = await api<Campaign>(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify({ status: campaign.status === "active" ? "draft" : "active" }) });
-    setCampaign(updated);
-  }
-
-  async function saveThankYou(data: Record<string, string>) {
-    const updated = await api<Campaign>(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify({ thank_you: data }) });
-    setCampaign(updated);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
-  }
+  useEffect(() => { load(); }, [id]);
 
   if (error) return <div className="detail-page"><ErrorState message={error} onRetry={load}/></div>;
-  if (!campaign) return <Loading/>;
+  if (!campaign || !forms) return <Loading/>;
+
+  const period = campaign.starts_on || campaign.ends_on
+    ? `${campaign.starts_on ? shortDate.format(new Date(campaign.starts_on)) : "…"} → ${campaign.ends_on ? shortDate.format(new Date(campaign.ends_on)) : "…"}`
+    : "";
 
   return <div className="detail-page">
     <div className="detail-top">
       <Link href="/campaigns" className="back-link"><ArrowLeft size={18}/>Campagnes</Link>
       <div className="detail-actions">
-        <a href={`/forms/${campaign.slug}?preview=1`} target="_blank" className="button button-secondary"><Eye size={18}/>Prévisualiser</a>
-        <button onClick={() => void publish()} className="button button-primary">{campaign.status === "active" ? "Mettre en pause" : <><Send size={17}/>Publier</>}</button>
+        <Link href={`/campaigns/${id}/forms/new`} className="button button-primary"><Plus size={18}/>Nouveau formulaire</Link>
       </div>
     </div>
     <header className="campaign-title">
-      <div><div className="title-line"><h1>{campaign.name}</h1><Badge tone={campaign.status === "active" ? "green" : "amber"}>{campaign.status === "active" ? "Active" : "Brouillon"}</Badge></div><p>{campaign.description}</p></div>
+      <div>
+        <div className="title-line"><h1>{campaign.name}</h1>{campaign.active > 0 ? <Badge tone="green">{campaign.active} formulaire{campaign.active > 1 ? "s" : ""} en ligne</Badge> : <Badge tone="amber">Aucun formulaire en ligne</Badge>}</div>
+        <p>{[campaign.client, period, campaign.objective].filter(Boolean).join(" · ") || "Aucune information complémentaire"}</p>
+      </div>
     </header>
     <nav className="detail-tabs">
-      <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><BarChart3 size={18}/>Vue d’ensemble</button>
-      <button className={tab === "form" ? "active" : ""} onClick={() => setTab("form")}><FileText size={18}/>Formulaire</button>
+      <button className={tab === "forms" ? "active" : ""} onClick={() => setTab("forms")}><LayoutTemplate size={18}/>Formulaires <span>{campaign.forms}</span></button>
+      <button className={tab === "stats" ? "active" : ""} onClick={() => setTab("stats")}><BarChart3 size={18}/>Statistiques</button>
       <button className={tab === "responses" ? "active" : ""} onClick={() => setTab("responses")}><MessageSquareText size={18}/>Réponses <span>{campaign.responses}</span></button>
-      <button className={tab === "share" ? "active" : ""} onClick={() => setTab("share")}><Globe2 size={18}/>Diffusion</button>
-      <button className={tab === "tunnel" ? "active" : ""} onClick={() => setTab("tunnel")}><Settings2 size={18}/>Tunnel</button>
+      <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings2 size={18}/>Paramètres</button>
     </nav>
-    {tab === "overview" && <Overview campaign={campaign} onEdit={() => setTab("form")}/>}
-    {tab === "form" && <LunaFormEditor campaign={campaign} onCampaignChange={setCampaign}/>}
-    {tab === "responses" && <Responses campaign={campaign}/>}
-    {tab === "share" && <Share campaign={campaign}/>}
-    {tab === "tunnel" && <Tunnel campaign={campaign} onSave={saveThankYou} saved={saved}/>}
+    {tab === "forms" && <Forms campaign={campaign} forms={forms} onReload={load}/>}
+    {tab === "stats" && <Stats campaign={campaign}/>}
+    {tab === "responses" && <div className="detail-content"><ResponsesInbox campaignId={campaign.id}/></div>}
+    {tab === "settings" && <Settings campaign={campaign} onSaved={setCampaign}/>}
   </div>;
 }
 
-function Overview({ campaign, onEdit }: { campaign: Campaign; onEdit: () => void }) {
-  const date = new Intl.DateTimeFormat("fr-FR", { dateStyle: "long" });
+function Forms({ campaign, forms, onReload }: { campaign: Campaign; forms: Form[]; onReload: () => void }) {
+  const me = useMe();
+  const company = { name: me?.company.name || "Votre entreprise", logo: me?.company.logo };
+
+  async function duplicate(form: Form) {
+    await api(`/forms/${form.id}/duplicate`, { method: "POST" });
+    onReload();
+  }
+
+  async function setArchived(form: Form, archived: boolean) {
+    await api(`/forms/${form.id}`, { method: "PATCH", body: JSON.stringify({ archived }) });
+    onReload();
+  }
+
+  if (!forms.length) return <div className="detail-content">
+    <EmptyState icon={<FileText/>} title="Aucun formulaire dans cette campagne" text="Décrivez ce que vous voulez demander : Luna construit le formulaire, vous l’ajustez ensuite." action={<Link href={`/campaigns/${campaign.id}/forms/new`} className="button button-primary"><Plus size={18}/>Créer le premier formulaire</Link>}/>
+  </div>;
+
   return <div className="detail-content">
-    <section className="metric-grid metric-grid-3">
-      <article className="metric-card"><p>Visites</p><strong>{campaign.visits}</strong><span>Depuis la création</span></article>
-      <article className="metric-card"><p>Réponses</p><strong>{campaign.responses}</strong><span>Collectées</span></article>
-      <article className="metric-card"><p>Conversion</p><strong>{campaign.conversion} %</strong><span>Visite → réponse</span></article>
-    </section>
-    <div className="detail-grid">
-      <article className="panel">
-        <div className="panel-head"><div><p className="eyebrow">FORMULAIRE</p><h2>{campaign.fields.length} champs configurés</h2></div><button className="text-link" onClick={onEdit}>Modifier avec Luna</button></div>
-        <div className="field-summary">{campaign.fields.map((field, index) => <div key={field.id}><span>{String(index + 1).padStart(2, "0")}</span><strong>{field.label}</strong><small>{labelType(field.type)}{field.required ? " · requis" : ""}</small></div>)}</div>
-      </article>
-      <article className="panel health-card">
-        <p className="eyebrow">QUALITÉ</p>
-        <h2>{campaign.health.score >= 85 ? "Prête à convertir" : campaign.health.score >= 60 ? "Quelques réglages" : "À revoir"}</h2>
-        <div className="health-score"><strong>{campaign.health.score}</strong><span>/100</span></div>
-        <ul>{campaign.health.checks.map(check => <li key={check.label} className={check.ok ? "" : "todo"}>{check.ok ? <Check/> : <AlertCircle/>}<span>{check.ok ? check.label : check.hint}</span></li>)}</ul>
-      </article>
-      <article className="panel">
-        <p className="eyebrow">INFORMATIONS</p>
-        <h2>Suivi</h2>
-        <dl className="detail-facts">
-          <div><dt>Statut</dt><dd>{campaign.status === "active" ? "Publiée" : "Brouillon"}</dd></div>
-          <div><dt>Type</dt><dd>{({ contact: "Contact", survey: "Sondage", information: "Information" } as Record<string, string>)[campaign.kind] || campaign.kind}</dd></div>
-          <div><dt>Créée le</dt><dd>{date.format(new Date(campaign.created_at))}</dd></div>
-          <div><dt>Modifiée le</dt><dd>{date.format(new Date(campaign.updated_at))}</dd></div>
-          <div><dt>Adresse</dt><dd className="mono">/forms/{campaign.slug}</dd></div>
-        </dl>
-      </article>
+    <div className="form-card-grid">
+      {forms.map(form => <article className={`panel form-card ${form.archived ? "archived" : ""}`} key={form.id}>
+        <Link href={`/campaigns/${campaign.id}/forms/${form.id}`} className="form-card-preview" aria-label={`Ouvrir ${form.name}`}>
+          <FormStage design={form.design} className="template-miniature">
+            <div className="template-miniature-scale"><FormRenderer form={form} company={company} mode="thumb"/></div>
+          </FormStage>
+        </Link>
+        <div className="form-card-copy">
+          <div className="title-line">
+            <Link href={`/campaigns/${campaign.id}/forms/${form.id}`}><strong>{form.name}</strong></Link>
+            <Badge tone={form.archived ? "neutral" : form.status === "active" ? "green" : "amber"}>{form.archived ? "Archivé" : form.status === "active" ? "En ligne" : "En pause"}</Badge>
+          </div>
+          <p>{form.responses} réponses · {form.conversion} % de conversion</p>
+          <div className="form-card-actions">
+            <a className="icon-button" href={`/forms/${form.slug}?preview=1`} target="_blank" title="Prévisualiser" aria-label={`Prévisualiser ${form.name}`}><ExternalLink size={17}/></a>
+            <button className="icon-button" onClick={() => void duplicate(form)} title="Dupliquer" aria-label={`Dupliquer ${form.name}`}><Copy size={17}/></button>
+            {form.archived
+              ? <button className="icon-button" onClick={() => void setArchived(form, false)} title="Restaurer" aria-label={`Restaurer ${form.name}`}><ArchiveRestore size={17}/></button>
+              : <button className="icon-button" onClick={() => void setArchived(form, true)} title="Archiver" aria-label={`Archiver ${form.name}`}><Archive size={17}/></button>}
+          </div>
+        </div>
+      </article>)}
     </div>
   </div>;
 }
 
-function Responses({ campaign }: { campaign: Campaign }) {
-  type Row = { id: string; answers: Record<string, string | number>; source: string; consent: boolean; created_at: string };
-  const [rows, setRows] = useState<Row[] | null>(null);
+function Stats({ campaign }: { campaign: Campaign }) {
+  const [stats, setStats] = useState<CampaignStats | null>(null);
   const [error, setError] = useState("");
   const load = () => {
     setError("");
-    api<Row[]>(`/campaigns/${campaign.id}/responses`).then(setRows).catch(err => setError(err instanceof Error ? err.message : "Une erreur est survenue"));
+    api<CampaignStats>(`/campaigns/${campaign.id}/stats`).then(setStats).catch(err => setError(err instanceof Error ? err.message : "Une erreur est survenue"));
   };
   useEffect(() => { load(); }, [campaign.id]);
 
-  async function exportCsv() {
-    const token = localStorage.getItem("sillage_token");
-    try {
-      const response = await fetch(`${API_URL}/campaigns/${campaign.id}/export.csv`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!response.ok) throw new Error("Export impossible");
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${campaign.slug}.csv`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Export impossible");
-    }
-  }
+  if (error) return <div className="detail-content"><ErrorState message={error} onRetry={load}/></div>;
+  if (!stats) return <div className="detail-content"><Loading/></div>;
+
+  const max = Math.max(...stats.daily.map(day => day.count), 1);
+  const total = stats.sources.reduce((sum, source) => sum + source.count, 0);
 
   return <div className="detail-content">
-    <div className="response-tools">
-      <div><p className="eyebrow">DONNÉES</p><h2>{campaign.responses} réponses</h2></div>
-      <button className="button button-secondary" onClick={() => void exportCsv()}><Download size={17}/>Exporter CSV</button>
+    <section className="metric-grid">
+      <article className="metric-card"><p>Formulaires</p><strong>{stats.forms}</strong><span>{stats.active} en ligne</span></article>
+      <article className="metric-card"><p>Visites</p><strong>{stats.visits}</strong><span>Toutes sources</span></article>
+      <article className="metric-card"><p>Réponses</p><strong>{stats.responses}</strong><span>Collectées</span></article>
+      <article className="metric-card"><p>Conversion</p><strong>{stats.conversion} %</strong><span>{stats.best ? `Meilleur : ${stats.best.name}` : "Visite → réponse"}</span></article>
+    </section>
+    <div className="campaign-stats-grid">
+      <article className="panel">
+        <div className="panel-head"><div><p className="eyebrow">PAR FORMULAIRE</p><h2>Ce que chacun apporte</h2></div></div>
+        <div className="breakdown-list">
+          {stats.breakdown.map(row => <Link href={`/campaigns/${campaign.id}/forms/${row.id}`} key={row.id}>
+            <div><strong>{row.name}</strong><span>{row.visits} visites · {row.conversion} % de conversion</span></div>
+            <b>{row.responses}</b>
+          </Link>)}
+        </div>
+      </article>
+      <article className="panel">
+        <div className="panel-head"><div><p className="eyebrow">ACTIVITÉ</p><h2>7 derniers jours</h2></div></div>
+        <div className="bar-chart">{stats.daily.map(day => <div key={day.date}><i style={{ height: `${Math.round(day.count / max * 100)}%` }} title={`${day.count} réponses`}/><span>{weekday.format(new Date(day.date))}</span></div>)}</div>
+      </article>
+      <article className="panel">
+        <div className="panel-head"><div><p className="eyebrow">ACQUISITION</p><h2>Sources</h2></div></div>
+        <div className="source-list">
+          {!stats.sources.length && <p className="muted">Aucune réponse collectée pour le moment.</p>}
+          {stats.sources.map((source, index) => <div className="source-row" key={source.name}>
+            <span className={`source-dot dot-${index % 4}`}/>
+            <div><div className="source-label"><strong>{source.name}</strong><span>{Math.round(source.count / total * 100)} %</span></div><div className="progress"><i style={{ width: `${Math.round(source.count / total * 100)}%` }}/></div></div>
+          </div>)}
+        </div>
+      </article>
     </div>
-    {error ? <ErrorState message={error} onRetry={load}/> : rows === null ? <Loading/> : <div className="responses-table panel">
-      <div className="response-table-head"><span>Contact</span><span>Source</span><span>Consentement</span><span>Reçue le</span></div>
-      {rows.map(row => <div className="response-table-row" key={row.id}>
-        <div><strong>{row.answers.name || "Réponse anonyme"}</strong><span>{row.answers.email || row.answers.comment || "—"}</span></div>
-        <Badge>{row.source}</Badge>
-        <span className={row.consent ? "consent-ok" : "consent-ko"}>{row.consent ? <><Check size={15}/>Recueilli</> : <><X size={15}/>Non</>}</span>
-        <span>{new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium" }).format(new Date(row.created_at))}</span>
-      </div>)}
-    </div>}
   </div>;
 }
 
-const channels = [
-  { key: "Lien direct", hint: "Signature, messagerie, conversation" },
-  { key: "QR Code", hint: "Affiche, comptoir, véhicule" },
-  { key: "Website", hint: "Bouton ou page de votre site" },
-  { key: "Email", hint: "Newsletter et campagnes email" },
-  { key: "Réseaux sociaux", hint: "Publication et bio" },
-];
-
-function Share({ campaign }: { campaign: Campaign }) {
-  const [channel, setChannel] = useState(channels[0].key);
-  const [copied, setCopied] = useState("");
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const url = channel === "Lien direct" ? `${origin}/forms/${campaign.slug}` : `${origin}/forms/${campaign.slug}?source=${encodeURIComponent(channel)}`;
-  const iframe = `<iframe src="${origin}/forms/${campaign.slug}?source=Website" width="100%" height="720" style="border:0" title="${campaign.name}"></iframe>`;
-
-  function copy(value: string, key: string) {
-    void navigator.clipboard.writeText(value).then(() => {
-      setCopied(key);
-      setTimeout(() => setCopied(""), 1500);
-    });
-  }
-
-  return <div className="detail-content">
-    <div className="share-hero">
-      <p className="eyebrow">DIFFUSION</p>
-      <h2>Partagez votre campagne partout.</h2>
-      <p>Choisissez un canal : il est repris tel quel dans vos statistiques d’acquisition.</p>
-      <div className="channel-picker">{channels.map(item => <button key={item.key} className={channel === item.key ? "selected" : ""} onClick={() => setChannel(item.key)}><strong>{item.key}</strong><small>{item.hint}</small></button>)}</div>
-      <div className="copy-field"><Link2 size={18}/><span>{url}</span><button onClick={() => copy(url, "url")}>{copied === "url" ? <><Check size={17}/>Copié</> : <><Copy size={17}/>Copier</>}</button></div>
-      {campaign.status !== "active" && <p className="share-warning">Cette campagne est en brouillon : le lien affiche le formulaire mais n’accepte pas encore de réponse.</p>}
-    </div>
-    <article className="panel share-embed">
-      <div className="panel-head"><div><p className="eyebrow">INTÉGRATION</p><h2>Sur votre site</h2></div><button className="text-link" onClick={() => copy(iframe, "iframe")}>{copied === "iframe" ? <><Check size={15}/>Copié</> : <><Code2 size={15}/>Copier le code</>}</button></div>
-      <pre className="embed-code">{iframe}</pre>
-    </article>
-  </div>;
-}
-
-function Tunnel({ campaign, onSave, saved }: { campaign: Campaign; onSave: (data: Record<string, string>) => Promise<void>; saved: boolean }) {
-  const me = useMe();
-  const [data, setData] = useState<Record<string, string>>(campaign.thank_you);
+function Settings({ campaign, onSaved }: { campaign: Campaign; onSaved: (campaign: Campaign) => void }) {
+  const router = useRouter();
+  const [data, setData] = useState({ name: campaign.name, client: campaign.client, objective: campaign.objective, starts_on: campaign.starts_on || "", ends_on: campaign.ends_on || "" });
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
-  const company = me?.company.name || "Votre entreprise";
 
   async function save() {
     setError("");
     try {
-      await onSave(data);
+      onSaved(await api<Campaign>(`/campaigns/${campaign.id}`, { method: "PATCH", body: JSON.stringify({ ...data, starts_on: data.starts_on || null, ends_on: data.ends_on || null }) }));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1800);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Enregistrement impossible");
     }
   }
 
-  return <div className="detail-content"><div className="tunnel-grid">
-    <div className="panel tunnel-config">
-      <p className="eyebrow">APRÈS L’ENVOI</p>
-      <h2>Page de remerciement</h2>
-      <label>Titre<input value={data.title || ""} onChange={event => setData({ ...data, title: event.target.value })}/></label>
-      <p className="field-hint">Utilisez <code>{"{prenom}"}</code> pour reprendre le prénom, s’il est demandé dans le formulaire.</p>
-      <label>Message<textarea value={data.message || ""} onChange={event => setData({ ...data, message: event.target.value })}/></label>
-      <label>Action<select value={data.action || "none"} onChange={event => setData({ ...data, action: event.target.value })}>
-        <option value="none">Aucune action</option>
-        <option value="cta">Bouton vers une page</option>
-        <option value="redirect">Redirection automatique</option>
-      </select></label>
-      {data.action !== "none" && <>
-        <label>Texte du bouton<input value={data.button_label || ""} onChange={event => setData({ ...data, button_label: event.target.value })}/></label>
-        <label>URL de destination<input value={data.button_url || ""} onChange={event => setData({ ...data, button_url: event.target.value })} placeholder="https://"/></label>
-        {data.action === "redirect" && <p className="field-hint">Le visiteur est redirigé après 3 secondes, avec un lien de secours.</p>}
-      </>}
-      {error && <p className="form-error">{error}</p>}
-      <button className="button button-primary" onClick={() => void save()}>{saved ? <><Check size={17}/>Enregistré</> : <><Save size={17}/>Enregistrer</>}</button>
-    </div>
-    <div className="thanks-preview">
-      <div className="client-monogram">{company.split(" ").map(word => word[0]).join("").slice(0, 2).toUpperCase()}</div>
-      <div className="thanks-check"><Check/></div>
-      <h2>{thankYouTitle(data.title, { name: "Léa Bernard" })}</h2>
-      <p>{data.message}</p>
-      {data.action !== "none" && <button className="button button-primary">{data.button_label || "Continuer"}</button>}
-      <small>{company} · Mentions légales</small>
-    </div>
-  </div></div>;
-}
+  async function archive() {
+    await api(`/campaigns/${campaign.id}`, { method: "PATCH", body: JSON.stringify({ archived: !campaign.archived }) });
+    router.push("/campaigns");
+  }
 
-function labelType(type: string) {
-  return ({ text: "Texte court", email: "Email", tel: "Téléphone", textarea: "Texte long", radio: "Choix unique", select: "Liste", rating: "Note", consent: "Consentement", date: "Date", number: "Nombre" } as Record<string, string>)[type] || type;
+  return <div className="detail-content"><div className="detail-grid">
+    <article className="panel campaign-settings">
+      <p className="eyebrow">LA CAMPAGNE</p>
+      <h2>Informations</h2>
+      <label>Nom<input value={data.name} maxLength={140} onChange={event => setData({ ...data, name: event.target.value })}/></label>
+      <label>Client<input value={data.client} maxLength={140} onChange={event => setData({ ...data, client: event.target.value })}/></label>
+      <label>Objectif<textarea value={data.objective} maxLength={600} onChange={event => setData({ ...data, objective: event.target.value })}/></label>
+      <div className="period-fields">
+        <label>Début<input type="date" value={data.starts_on} onChange={event => setData({ ...data, starts_on: event.target.value })}/></label>
+        <label>Fin<input type="date" value={data.ends_on} min={data.starts_on || undefined} onChange={event => setData({ ...data, ends_on: event.target.value })}/></label>
+      </div>
+      {error && <p className="form-error">{error}</p>}
+      <button className="button button-primary" onClick={() => void save()} disabled={data.name.trim().length < 3}>{saved ? <><Check size={17}/>Enregistré</> : <><Save size={17}/>Enregistrer</>}</button>
+    </article>
+    <article className="panel">
+      <p className="eyebrow">SUIVI</p>
+      <h2>Repères</h2>
+      <dl className="detail-facts">
+        <div><dt>Formulaires</dt><dd>{campaign.forms}</dd></div>
+        <div><dt>Réponses</dt><dd>{campaign.responses}</dd></div>
+        <div><dt>Créée le</dt><dd>{longDate.format(new Date(campaign.created_at))}</dd></div>
+        <div><dt>Dernière activité</dt><dd>{longDate.format(new Date(campaign.last_activity))}</dd></div>
+      </dl>
+      <p className="field-hint">Archiver la campagne retire ses formulaires des statistiques globales et de la page d’accueil. Aucune réponse n’est supprimée, et les liens publics cessent de répondre.</p>
+      <button className="button button-secondary" onClick={() => void archive()}>{campaign.archived ? <><ArchiveRestore size={17}/>Restaurer la campagne</> : <><Archive size={17}/>Archiver la campagne</>}</button>
+    </article>
+  </div></div>;
 }

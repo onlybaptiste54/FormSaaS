@@ -3,12 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronDown, Clock3, FileText, LayoutTemplate, LoaderCircle, Plus, Search, Send, Sparkles, Star, TrendingUp, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bookmark, Check, Clock3, FileText, FolderOpen, LayoutTemplate, LoaderCircle, Plus, Search, Sparkles, Star, TrendingUp, X } from "lucide-react";
 import { PageHeader } from "@/components/shell";
 import { Loading } from "@/components/ui";
 import { FormRenderer, FormStage } from "@/components/form-renderer";
 import { api } from "@/lib/api";
-import type { Campaign, LibraryData, LibraryTemplate } from "@/lib/types";
+import type { Campaign, Form, LibraryData, LibraryTemplate } from "@/lib/types";
 
 const categories = ["Tous", "Contact", "Sondage", "Information"];
 
@@ -19,10 +19,17 @@ export default function LibraryPage() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Tous");
   const [selected, setSelected] = useState<LibraryTemplate | null>(null);
+  // Un modele s'ajoute toujours dans une campagne : on demande laquelle avant de creer.
+  const [pending, setPending] = useState<LibraryTemplate | null>(null);
+  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [busyAction, setBusyAction] = useState<{ key: string; action: string } | null>(null);
   const [notice, setNotice] = useState("");
 
   useEffect(() => { void api<LibraryData>("/library").then(setData); }, []);
+  useEffect(() => {
+    if (!pending || campaigns) return;
+    void api<Campaign[]>("/campaigns").then(setCampaigns).catch(() => setCampaigns([]));
+  }, [pending, campaigns]);
   useEffect(() => {
     if (!selected) return;
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") setSelected(null); };
@@ -37,11 +44,11 @@ export default function LibraryPage() {
   };
   const featured = useMemo(() => data?.featured.filter(matches) || [], [data, query, category]);
   const saved = useMemo(() => data?.saved.filter(matches) || [], [data, query, category]);
-  const recent = useMemo(() => data?.recent.filter(campaign => {
+  const recent = useMemo(() => data?.recent.filter(form => {
     const search = query.trim().toLocaleLowerCase("fr");
-    const campaignCategory = categoryLabel(campaign.kind);
-    return (category === "Tous" || campaignCategory === category) &&
-      (!search || `${campaign.name} ${campaign.description} ${campaignCategory}`.toLocaleLowerCase("fr").includes(search));
+    const formCategory = categoryLabel(form.kind);
+    return (category === "Tous" || formCategory === category) &&
+      (!search || `${form.name} ${form.description} ${formCategory}`.toLocaleLowerCase("fr").includes(search));
   }) || [], [data, query, category]);
 
   function scrollCarousel(direction: number) {
@@ -64,17 +71,17 @@ export default function LibraryPage() {
     }
   }
 
-  async function useTemplate(template: LibraryTemplate) {
+  async function useTemplate(template: LibraryTemplate, campaignId: string) {
     setBusyAction({ key: template.id || template.key, action: "use" });
     try {
       const path = template.id ? `/library/templates/${template.id}/use` : `/library/featured/${template.key}/use`;
-      const campaign = await api<Campaign>(path, { method: "POST" });
-      router.push(`/campaigns/${campaign.id}?tab=form`);
+      const form = await api<Form>(path, { method: "POST", body: JSON.stringify({ campaign_id: campaignId }) });
+      router.push(`/campaigns/${form.campaign_id}/forms/${form.id}?tab=form`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Création impossible");
       setTimeout(() => setNotice(""), 2600);
-    } finally {
       setBusyAction(null);
+      setPending(null);
     }
   }
 
@@ -99,7 +106,7 @@ export default function LibraryPage() {
         <div className="library-section-head">
           <div><span className="section-kicker"><Bookmark size={14}/>Votre espace</span><h2>Mes modèles <small>{saved.length}</small></h2><p>Vos bases enregistrées, prêtes à être réutilisées sans toucher à l’original.</p></div>
         </div>
-        {saved.length ? <div className="saved-template-grid">{saved.map(template => <SavedTemplateCard template={template} onOpen={setSelected} onUse={useTemplate} busy={busyAction?.key === template.id && busyAction?.action === "use"} key={template.id}/>)}</div> : <div className="library-empty">
+        {saved.length ? <div className="saved-template-grid">{saved.map(template => <SavedTemplateCard template={template} onOpen={setSelected} onUse={setPending} busy={busyAction?.key === template.id && busyAction?.action === "use"} key={template.id}/>)}</div> : <div className="library-empty">
           <div><LayoutTemplate/></div><h3>Votre collection commence ici</h3><p>Ajoutez un modèle populaire pour le retrouver et le réutiliser à tout moment.</p><button className="text-link" onClick={() => document.getElementById("popular")?.scrollIntoView({ behavior: "smooth" })}>Explorer les modèles <ArrowRight size={15}/></button>
         </div>}
       </section>
@@ -109,11 +116,12 @@ export default function LibraryPage() {
           <div><span className="section-kicker"><Clock3 size={14}/>Activité</span><h2>Récemment utilisés</h2><p>Reprenez rapidement vos derniers formulaires.</p></div>
           <Link href="/campaigns" className="text-link">Toutes les campagnes <ArrowRight size={15}/></Link>
         </div>
-        {recent.length ? <div className="recent-template-list">{recent.map(campaign => <RecentCampaign campaign={campaign} key={campaign.id}/>)}</div> : <NoResult/>}
+        {recent.length ? <div className="recent-template-list">{recent.map(form => <RecentForm form={form} key={form.id}/>)}</div> : <NoResult/>}
       </section>
     </>}
 
-    {selected && <TemplateModal template={selected} saved={Boolean(selected.id)} busyAction={busyAction?.action || ""} onClose={() => setSelected(null)} onSave={saveTemplate} onUse={useTemplate}/>}
+    {selected && <TemplateModal template={selected} saved={Boolean(selected.id)} busyAction={busyAction?.action || ""} onClose={() => setSelected(null)} onSave={saveTemplate} onUse={setPending}/>}
+    {pending && <CampaignPicker campaigns={campaigns} busy={busyAction?.action === "use"} onClose={() => setPending(null)} onPick={campaignId => void useTemplate(pending, campaignId)}/>}
     {notice && <div className="library-toast"><Check size={16}/>{notice}</div>}
   </div>;
 }
@@ -130,17 +138,36 @@ function TemplateCard({ template, rank, onOpen }: { template: LibraryTemplate; r
 function SavedTemplateCard({ template, onOpen, onUse, busy }: { template: LibraryTemplate; onOpen: (template: LibraryTemplate) => void; onUse: (template: LibraryTemplate) => void; busy: boolean }) {
   return <article className="saved-template-card panel">
     <div className="saved-template-preview" role="button" tabIndex={0} onClick={() => onOpen(template)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(template); } }}><TemplateMiniature template={template}/></div>
-    <div className="saved-template-copy"><span>{template.category}</span><h3>{template.name}</h3><p>{template.field_count} champs · utilisé {template.uses || 0} fois</p><div><button className="button button-secondary" onClick={() => onOpen(template)}>Aperçu</button><button className="button button-primary" onClick={() => void onUse(template)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>}Utiliser</button></div></div>
+    <div className="saved-template-copy"><span>{template.category}</span><h3>{template.name}</h3><p>{template.field_count} champs · utilisé {template.uses || 0} fois</p><div><button className="button button-secondary" onClick={() => onOpen(template)}>Aperçu</button><button className="button button-primary" onClick={() => onUse(template)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>}Utiliser</button></div></div>
   </article>;
 }
 
-function RecentCampaign({ campaign }: { campaign: Campaign }) {
-  return <Link href={`/campaigns/${campaign.id}?tab=form`} className="recent-template-row">
-    <FormStage design={campaign.design} className="recent-template-visual"><span/><span/><span/></FormStage>
-    <div><span>{categoryLabel(campaign.kind)}</span><strong>{campaign.name}</strong><small>Modifié {relativeDate(campaign.updated_at)}</small></div>
-    <div className="recent-template-stats"><strong>{campaign.responses}</strong><span>réponses</span></div>
+function RecentForm({ form }: { form: Form }) {
+  return <Link href={`/campaigns/${form.campaign_id}/forms/${form.id}?tab=form`} className="recent-template-row">
+    <FormStage design={form.design} className="recent-template-visual"><span/><span/><span/></FormStage>
+    <div><span>{form.campaign_name}</span><strong>{form.name}</strong><small>Modifié {relativeDate(form.updated_at)}</small></div>
+    <div className="recent-template-stats"><strong>{form.responses}</strong><span>réponses</span></div>
     <ArrowRight size={18}/>
   </Link>;
+}
+
+/** Choix de la campagne d'accueil : un formulaire ne vit jamais hors d'une campagne. */
+function CampaignPicker({ campaigns, busy, onClose, onPick }: { campaigns: Campaign[] | null; busy: boolean; onClose: () => void; onPick: (campaignId: string) => void }) {
+  return <div className="template-modal-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose(); }}>
+    <div className="campaign-picker panel" role="dialog" aria-modal="true" aria-label="Choisir une campagne">
+      <button className="template-modal-close" onClick={onClose} aria-label="Fermer"><X/></button>
+      <p className="eyebrow">DANS QUELLE CAMPAGNE ?</p>
+      <h2>Ajouter ce formulaire</h2>
+      {!campaigns ? <Loading/> : campaigns.length ? <div className="campaign-picker-list">
+        {campaigns.map(campaign => <button key={campaign.id} onClick={() => onPick(campaign.id)} disabled={busy}>
+          <div className="campaign-icon"><FolderOpen size={19}/></div>
+          <div><strong>{campaign.name}</strong><span>{campaign.client || `${campaign.forms} formulaire${campaign.forms > 1 ? "s" : ""}`}</span></div>
+          {busy ? <LoaderCircle className="spin" size={16}/> : <ArrowRight size={17}/>}
+        </button>)}
+      </div> : <p className="muted">Aucune campagne pour le moment.</p>}
+      <Link href="/campaigns/new" className="button button-secondary"><Plus size={16}/>Créer une campagne</Link>
+    </div>
+  </div>;
 }
 
 /** Vignette : le rendu reel, simplement mis a l'echelle. */
@@ -166,9 +193,9 @@ function TemplateModal({ template, saved, busyAction, onClose, onSave, onUse }: 
         <div className="template-modal-meta"><span><FileText/> {template.field_count} champs</span>{template.minutes && <span><Clock3/> {template.minutes} min</span>}<span><Sparkles/> Personnalisable avec Luna</span></div>
         <div className="template-modal-actions">
           {!saved && <button className="button button-secondary" onClick={() => void onSave(template)} disabled={Boolean(busyAction)}>{busyAction === "save" ? <LoaderCircle className="spin" size={16}/> : <Bookmark size={16}/>}Ajouter à mes modèles</button>}
-          <button className="button button-primary" onClick={() => void onUse(template)} disabled={Boolean(busyAction)}>{busyAction === "use" ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>}Créer ce formulaire</button>
+          <button className="button button-primary" onClick={() => onUse(template)} disabled={Boolean(busyAction)}>{busyAction === "use" ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>}Créer ce formulaire</button>
         </div>
-        <small>Une nouvelle campagne indépendante sera créée : vous pourrez tout modifier sans altérer ce modèle.</small>
+        <small>Un nouveau formulaire indépendant sera ajouté à la campagne de votre choix : vous pourrez tout modifier sans altérer ce modèle.</small>
       </aside>
     </div>
   </div>;
