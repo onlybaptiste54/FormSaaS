@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +23,8 @@ from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_templa
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Les mesures de Luna (duree, tentatives, tokens) doivent etre visibles.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     initialize_schema()
     with SessionLocal() as db:
         seed(db)

@@ -101,3 +101,13 @@ def test_a_question_changes_nothing():
 def test_contrast_ratio_matches_the_wcag_reference():
     assert round(contrast_ratio("#000000", "#FFFFFF"), 1) == 21.0
     assert round(contrast_ratio("#FFFFFF", "#FFFFFF"), 1) == 1.0
+
+
+def test_the_schema_sent_to_openai_uses_anyof():
+    # L'API refuse `oneOf` : l'union discriminee de Pydantic doit etre convertie.
+    from app.luna_ops import ops_json_schema
+
+    items = ops_json_schema()["properties"]["ops"]["items"]
+    assert "oneOf" not in items
+    assert len(items["anyOf"]) == 8
+    assert "discriminator" not in items

@@ -127,6 +127,21 @@ class LunaOps(Strict):
     ops: list[Operation] = Field(max_length=12)
 
 
+def ops_json_schema() -> dict:
+    """Schéma accepté par la sortie structurée stricte d'OpenAI.
+
+    L'union discriminée de Pydantic produit un `oneOf`, refusé par l'API, qui
+    n'accepte que `anyOf`. Le discriminant reste utilisé côté Python, où il
+    donne des erreurs de validation bien plus lisibles.
+    """
+    schema = LunaOps.model_json_schema()
+    items = schema["properties"]["ops"]["items"]
+    if "oneOf" in items:
+        items["anyOf"] = items.pop("oneOf")
+        items.pop("discriminator", None)
+    return schema
+
+
 def _business_fields(state: dict) -> list[dict]:
     return [field for field in state.get("fields", []) if field.get("type") != "consent"]
 

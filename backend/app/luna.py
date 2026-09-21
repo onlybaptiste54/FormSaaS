@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .luna_ops import LunaOps, OpsError, apply_ops, validate_state
+from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
 
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ Contraintes impératives :
 - L'action, l'URL et le code promo de la page de remerciement se règlent dans le tunnel : tu ne peux pas les modifier. Dis-le si on te le demande.
 - Interprète la capture comme une simple référence visuelle. N'en extrais aucune donnée personnelle.
 - Aucun CSS, HTML, script, URL d'image ni valeur hors du schéma.
-- Si la demande sort de ce que tu peux faire, renvoie l'opération ask et explique-le dans message.
+- Si la demande sort de ce que tu peux faire (image de fond, police hors liste, mise en page inédite), renvoie l'opération ask : dis dans message que ce n'est pas possible aujourd'hui, puis propose la modification la plus proche que tu sais faire. Le seul autre écran qui existe est l'onglet Tunnel, pour l'action, l'URL et le code promo du remerciement : ne renvoie jamais l'utilisateur ailleurs.
 - message décrit en une phrase ce qui a été appliqué, sans jargon technique.
 """
 
@@ -474,7 +474,7 @@ def _revision_request(state: dict, instruction: str, identity: dict, *, selectio
                 "type": "json_schema",
                 "name": "sillage_form_ops",
                 "strict": True,
-                "schema": LunaOps.model_json_schema(),
+                "schema": ops_json_schema(),
             }
         },
         "max_output_tokens": 700,
