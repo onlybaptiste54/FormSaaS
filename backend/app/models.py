@@ -65,6 +65,8 @@ class Campaign(Base):
     design: Mapped[dict] = mapped_column(JSON, default=dict)
     content: Mapped[dict] = mapped_column(JSON, default=dict)
     thank_you: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Modifications non publiees : le formulaire en ligne lit les colonnes ci-dessus.
+    draft: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     visits: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -73,6 +75,23 @@ class Campaign(Base):
     company: Mapped[Company] = relationship(back_populates="campaigns")
     creator: Mapped[User] = relationship(back_populates="campaigns")
     responses: Mapped[list["FormResponse"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+    versions: Mapped[list["CampaignVersion"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="CampaignVersion.created_at")
+
+
+class CampaignVersion(Base):
+    """Etat du formulaire apres une etape d'edition : sert d'historique et d'annulation."""
+
+    __tablename__ = "campaign_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(String(20), default="luna")
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    campaign: Mapped[Campaign] = relationship(back_populates="versions")
 
 
 class Template(Base):

@@ -43,6 +43,17 @@ class CampaignUpdate(BaseModel):
     archived: bool | None = None
 
 
+class DraftUpdate(BaseModel):
+    """Edition directe dans l'editeur : tout passe par le brouillon."""
+
+    name: str | None = Field(default=None, min_length=2, max_length=140)
+    description: str | None = Field(default=None, max_length=400)
+    fields: list[dict[str, Any]] | None = None
+    design: dict[str, Any] | None = None
+    content: dict[str, str] | None = None
+    thank_you: ThankYou | None = None
+
+
 class LunaRefineRequest(BaseModel):
     instruction: str = Field(min_length=3, max_length=800)
     selection_kind: Literal["form", "header", "field", "button"] = "form"

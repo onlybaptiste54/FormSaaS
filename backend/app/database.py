@@ -19,12 +19,12 @@ def initialize_schema():
         with engine.begin() as connection:
             connection.execute(text("SELECT pg_advisory_xact_lock(736455141)"))
             Base.metadata.create_all(bind=connection)
-            for column in ("design", "content"):
+            for column in ("design", "content", "draft"):
                 connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS {column} JSON"))
         return
     Base.metadata.create_all(bind=engine)
     columns = {column["name"] for column in inspect(engine).get_columns("campaigns")}
-    for column in ("design", "content"):
+    for column in ("design", "content", "draft"):
         if column not in columns:
             with engine.begin() as connection:
                 connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN {column} JSON"))

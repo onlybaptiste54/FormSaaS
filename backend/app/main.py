@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
 from .luna import LunaAPIError, default_content, default_design, generate_campaign, revise_campaign, slugify
-from .models import Campaign, Company, FormResponse, Template, User
-from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, LunaRefineRequest, SubmitResponse
+from .models import Campaign, CampaignVersion, Company, FormResponse, Template, User
+from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
 from .seed import seed
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
@@ -31,9 +31,48 @@ app = FastAPI(title="Sillage API", version="1.0.0", lifespan=lifespan, docs_url=
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
+EDITABLE_KEYS = ("name", "description", "fields", "design", "content", "thank_you")
+
+# Nombre de versions conservees par campagne.
+VERSION_LIMIT = 30
+
+
+def published_state(c: Campaign) -> dict:
+    """Etat en ligne du formulaire : ce que voit un visiteur."""
+    return {
+        "name": c.name,
+        "description": c.description,
+        "fields": c.fields,
+        "design": c.design or default_design(),
+        "content": c.content or default_content(c.kind),
+        "thank_you": c.thank_you,
+    }
+
+
+def editing_state(c: Campaign) -> dict:
+    """Etat en cours d'edition : le brouillon s'il existe, sinon le publie."""
+    return {**published_state(c), **(c.draft or {})}
+
+
+def record_version(db: Session, campaign: Campaign, snapshot: dict, *, source: str, instruction: str = "", message: str = "") -> CampaignVersion:
+    version = CampaignVersion(campaign_id=campaign.id, snapshot=snapshot, source=source, instruction=instruction, message=message)
+    db.add(version)
+    db.flush()
+    extra = db.scalars(
+        select(CampaignVersion).where(CampaignVersion.campaign_id == campaign.id).order_by(desc(CampaignVersion.created_at)).offset(VERSION_LIMIT)
+    ).all()
+    for old in extra:
+        db.delete(old)
+    return version
+
+
+def version_json(version: CampaignVersion):
+    return {"id": version.id, "source": version.source, "instruction": version.instruction, "message": version.message, "created_at": version.created_at.isoformat()}
+
+
 def campaign_json(c: Campaign):
     responses = len(c.responses)
-    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "content": c.content or default_content(c.kind), "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
+    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "content": c.content or default_content(c.kind), "thank_you": c.thank_you, "draft": c.draft, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
 
 
 def saved_template_json(template: Template):
@@ -255,17 +294,10 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     if not settings.openai_api_key:
         raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier le design avec Luna.")
     campaign = owned_campaign(campaign_id, db, user)
+    state = editing_state(campaign)
     try:
         revision = revise_campaign(
-            {
-                "name": campaign.name,
-                "description": campaign.description,
-                "kind": campaign.kind,
-                "fields": campaign.fields,
-                "design": campaign.design or default_design(),
-                "content": campaign.content or default_content(campaign.kind),
-                "thank_you": campaign.thank_you,
-            },
+            {**state, "kind": campaign.kind},
             data.instruction,
             luna_identity(user.company),
             selection={
@@ -281,11 +313,73 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
 
-    for key in ("name", "description", "kind", "fields", "design", "content", "thank_you"):
-        setattr(campaign, key, revision[key])
+    if campaign.draft is None and not campaign.versions:
+        record_version(db, campaign, published_state(campaign), source="initial", message="Version publiée")
+    campaign.draft = {key: revision[key] for key in EDITABLE_KEYS}
+    version = record_version(db, campaign, campaign.draft, source="luna", instruction=data.instruction, message=revision["assistant_message"])
     db.commit()
     db.refresh(campaign)
-    return {"message": revision["assistant_message"], "campaign": campaign_json(campaign)}
+    return {"message": revision["assistant_message"], "campaign": campaign_json(campaign), "version": version_json(version)}
+
+
+@app.get("/api/campaigns/{campaign_id}/versions")
+def list_versions(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    campaign = owned_campaign(campaign_id, db, user)
+    return [version_json(version) for version in campaign.versions]
+
+
+@app.patch("/api/campaigns/{campaign_id}/draft")
+def update_draft(campaign_id: str, data: DraftUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Edition directe : ce qui est corrige a la main va aussi dans le brouillon."""
+    campaign = owned_campaign(campaign_id, db, user)
+    changes = data.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(422, "Aucune modification transmise")
+    if campaign.draft is None and not campaign.versions:
+        record_version(db, campaign, published_state(campaign), source="initial", message="Version publiée")
+    campaign.draft = {**editing_state(campaign), **changes}
+    record_version(db, campaign, campaign.draft, source="manual", message="Modification manuelle")
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/campaigns/{campaign_id}/draft/publish")
+def publish_draft(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    campaign = owned_campaign(campaign_id, db, user)
+    if not campaign.draft:
+        raise HTTPException(422, "Aucune modification à publier")
+    for key, value in campaign.draft.items():
+        if key in EDITABLE_KEYS:
+            setattr(campaign, key, value)
+    campaign.draft = None
+    record_version(db, campaign, published_state(campaign), source="publish", message="Modifications publiées")
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/campaigns/{campaign_id}/draft/discard")
+def discard_draft(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    campaign = owned_campaign(campaign_id, db, user)
+    campaign.draft = None
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/campaigns/{campaign_id}/versions/{version_id}/restore")
+def restore_version(campaign_id: str, version_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Annuler, c'est revenir a une version precedente : rien n'est perdu."""
+    campaign = owned_campaign(campaign_id, db, user)
+    version = db.get(CampaignVersion, version_id)
+    if not version or version.campaign_id != campaign.id:
+        raise HTTPException(404, "Version introuvable")
+    campaign.draft = {key: value for key, value in version.snapshot.items() if key in EDITABLE_KEYS}
+    record_version(db, campaign, campaign.draft, source="restore", message="Retour à une version précédente")
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
 
 
 @app.post("/api/campaigns/{campaign_id}/duplicate", status_code=201)
