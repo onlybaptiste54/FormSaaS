@@ -111,6 +111,17 @@ def campaign_from_template(template: dict, user: User) -> Campaign:
     )
 
 
+def luna_history(campaign: Campaign) -> list[dict]:
+    """Derniers echanges, pour que Luna se souvienne de la conversation."""
+    turns = []
+    for version in campaign.versions[-6:]:
+        if version.instruction:
+            turns.append({"role": "user", "text": version.instruction})
+        if version.message and version.source == "luna":
+            turns.append({"role": "luna", "text": version.message})
+    return turns
+
+
 def luna_identity(company: Company) -> dict:
     return {
         "name": company.name,
@@ -301,10 +312,11 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
             data.instruction,
             luna_identity(user.company),
             selection={
-                "kind": data.selection_kind,
-                "id": data.selection_id,
+                "element_ids": data.element_ids,
                 "label": data.selection_label,
+                "view": data.view,
             },
+            history=luna_history(campaign),
             screenshot_data_url=data.screenshot_data_url,
             api_key=settings.openai_api_key,
             model=settings.openai_model,
@@ -319,7 +331,13 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     version = record_version(db, campaign, campaign.draft, source="luna", instruction=data.instruction, message=revision["assistant_message"])
     db.commit()
     db.refresh(campaign)
-    return {"message": revision["assistant_message"], "campaign": campaign_json(campaign), "version": version_json(version)}
+    return {
+        "message": revision["assistant_message"],
+        "campaign": campaign_json(campaign),
+        "version": version_json(version),
+        "touched": revision["touched"],
+        "ops": revision["ops"],
+    }
 
 
 @app.get("/api/campaigns/{campaign_id}/versions")

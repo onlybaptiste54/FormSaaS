@@ -660,3 +660,36 @@ to{opacity:1;transform:translateY(0)}}
 .template-miniature{position:relative;-webkit-mask-image:linear-gradient(#000 78%,transparent);mask-image:linear-gradient(#000 78%,transparent)}
 .template-showcase-card,.saved-template-preview{cursor:pointer}
 .template-showcase-card:focus-visible,.saved-template-preview:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+
+/* Lot 4 : editeur, selection au rectangle et barre de brouillon */
+.luna-editor{display:grid;grid-template-columns:1fr;gap:14px;align-items:start}
+.editor-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 14px;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.editor-bar-spacer{flex:1}
+.editor-bar .segment-control{height:34px}
+.editor-bar .segment-control button{height:28px;display:inline-flex;align-items:center;gap:6px}
+.editor-bar .button{min-height:36px;font-size:13px}
+.draft-state{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:650;color:var(--ink-soft)}
+.draft-state::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--line)}
+.draft-state.pending{color:var(--amber)}
+.draft-state.pending::before{background:var(--amber)}
+.editor-columns{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(330px,.72fr);gap:18px;align-items:start}
+.editor-hint{display:flex;align-items:center;gap:8px;margin:0;padding:11px 16px;border-bottom:1px solid var(--line-soft);color:var(--ink-soft);font-size:12px}
+.editor-canvas{min-height:640px;padding:40px 28px;display:flex;align-items:flex-start;justify-content:center}
+.editor-selection-layer{position:relative;width:100%;display:flex;justify-content:center;cursor:crosshair;user-select:none}
+.editor-canvas.device-mobile .editor-form-frame{width:390px}
+.editor-canvas.device-mobile .public-card{padding:28px 22px}
+.selection-rect{position:absolute;z-index:4;border:1.5px dashed var(--brand);background:rgba(47,107,79,.08);border-radius:4px;pointer-events:none}
+.selection-rect.kept{border-style:solid;background:rgba(47,107,79,.06)}
+.selection-bubble{position:absolute;z-index:6;width:min(320px,90%);display:grid;gap:8px;padding:12px;border-radius:12px;background:var(--surface);border:1px solid var(--line);box-shadow:0 18px 44px rgba(20,28,22,.18);cursor:default}
+.selection-bubble>span{font-size:11px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:.05em}
+.selection-bubble textarea{min-height:62px;resize:none;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff}
+.selection-bubble>div{display:flex;justify-content:flex-end;align-items:center;gap:10px}
+.selection-bubble>div>button:first-child{border:0;background:transparent;color:var(--ink-soft);font-size:12px;font-weight:650}
+.selection-bubble .button{min-height:34px;font-size:12px;padding:0 12px}
+.touched-halo{position:absolute;z-index:3;border-radius:10px;border:2px solid var(--brand);pointer-events:none;animation:halo 1.6s ease forwards}
+@keyframes halo{0%{opacity:0}15%{opacity:1}100%{opacity:0}}
+.inline-editing{outline:2px solid var(--brand);outline-offset:3px;border-radius:3px;cursor:text}
+.chat-undo{margin-top:7px;border:0;background:transparent;padding:0;display:inline-flex;align-items:center;gap:5px;color:var(--ink-soft);font-size:10px;font-weight:700}
+.chat-undo:hover{color:var(--brand)}
+.composer-target{font-size:10px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:.05em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:1180px){.editor-columns{grid-template-columns:1fr}}

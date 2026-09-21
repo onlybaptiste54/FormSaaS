@@ -55,10 +55,12 @@ class DraftUpdate(BaseModel):
 
 
 class LunaRefineRequest(BaseModel):
+    """Une demande porte sur la zone encadree, decrite par les elements qu'elle contient."""
+
     instruction: str = Field(min_length=3, max_length=800)
-    selection_kind: Literal["form", "header", "field", "button"] = "form"
-    selection_id: str | None = Field(default=None, max_length=40)
+    element_ids: list[str] = Field(default_factory=list, max_length=30)
     selection_label: str = Field(default="Formulaire complet", max_length=140)
+    view: Literal["form", "thanks"] = "form"
     screenshot_data_url: str | None = Field(default=None, max_length=4_000_000)
 
 

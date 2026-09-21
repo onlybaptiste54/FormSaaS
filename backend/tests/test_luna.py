@@ -1,8 +1,9 @@
 import json
 
 import httpx
+import pytest
 
-from app.luna import generate_campaign, revise_campaign
+from app.luna import LunaAPIError, generate_campaign, revise_campaign
 
 
 DESIGN = {
@@ -108,7 +109,30 @@ def test_openai_generation_uses_structured_output_and_safe_identity():
     assert campaign["design"]["style"]["page_from"] == "#0B0F1A"
 
 
-def test_visual_revision_sends_selected_capture_and_returns_safe_tokens():
+def _ops_response(message, ops):
+    return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps({"message": message, "ops": ops})}]}]})
+
+
+CURRENT = {
+    "name": "Contact",
+    "description": "Un formulaire de contact pour nos visiteurs.",
+    "kind": "contact",
+    "fields": [
+        {"id": "email", "label": "Email", "type": "email", "required": True},
+        {"id": "message", "label": "Votre message", "type": "textarea", "required": False},
+        {"id": "consent", "label": "J’accepte.", "type": "consent", "required": True},
+    ],
+    "design": {**DESIGN, "style": STYLE},
+    "content": CONTENT,
+    "thank_you": {"title": "Merci", "message": "Message reçu.", "action": "cta", "button_url": "https://exemple.fr", "button_label": "Voir"},
+}
+
+THEME = {"op": "set_theme", "page_from": None, "page_to": None, "surface": None, "surface_alpha": None, "border": None,
+         "border_alpha": None, "ink": None, "ink_soft": None, "accent": None, "accent_ink": None, "blur_px": None,
+         "radius_px": None, "glow": None, "font": None}
+
+
+def test_revision_applies_only_the_requested_operations():
     capture = "data:image/png;base64,aGVsbG8="
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -116,46 +140,74 @@ def test_visual_revision_sends_selected_capture_and_returns_safe_tokens():
         content = payload["input"][0]["content"]
         context = json.loads(content[0]["text"])
         assert payload["store"] is False
-        assert context["selection"] == {"kind": "field", "id": "email", "label": "Email"}
-        assert context["current_campaign"]["fields"][0]["id"] == "email"
-        assert all(field["type"] != "consent" for field in context["current_campaign"]["fields"])
-        assert content[1] == {"type": "input_image", "image_url": capture, "detail": "low"}
-        result = {
-            "name": "Contact rapide",
-            "description": "Laissez-nous vos coordonnées pour être rappelé rapidement.",
-            "kind": "contact",
-            "fields": [
-                {"id": "email", "label": "Votre meilleur email", "type": "email", "required": True, "options": [], "scale": None, "placeholder": "vous@entreprise.fr"},
-            ],
-            "design": {**AI_DESIGN, "field_style": "filled"},
-            "content": {**CONTENT, "submit_label": "Être rappelé"},
-            "thank_you_title": "Merci !",
-            "thank_you_message": "Votre demande a bien été envoyée à notre équipe.",
-            "assistant_message": "J’ai adouci le champ email et clarifié son libellé.",
-        }
-        return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(result)}]}]})
+        assert context["selection"]["element_ids"] == ["submit"]
+        assert context["recent_exchanges"][-1]["text"] == "Rends le bouton plus visible"
+        assert all(field["type"] != "consent" for field in context["current_form"]["fields"])
+        assert "siret" not in json.dumps(context)
+        assert content[1] == {"type": "input_image", "image_url": capture, "detail": "high"}
+        return _ops_response("Bouton en orange foncé, texte plus direct.", [
+            {"op": "set_text", "target": "submit_label", "value": "Être rappelé"},
+            {**THEME, "accent": "#A8380F", "accent_ink": "#FFFFFF"},
+        ])
 
     revision = revise_campaign(
-        {
-            "name": "Contact",
-            "description": "Un formulaire de contact pour nos visiteurs.",
-            "kind": "contact",
-            "fields": [
-                {"id": "email", "label": "Email", "type": "email", "required": True},
-                {"id": "consent", "label": "J’accepte.", "type": "consent", "required": True},
-            ],
-            "design": DESIGN,
-            "thank_you": {"title": "Merci", "message": "Message reçu."},
-        },
-        "Rends ce champ plus doux",
-        {"name": "Atelier Test", "primary_color": "#123456"},
-        selection={"kind": "field", "id": "email", "label": "Email"},
+        CURRENT,
+        "Rends le bouton plus visible",
+        {"name": "Atelier Test", "primary_color": "#123456", "siret": "NE-DOIT-PAS-PARTIR"},
+        selection={"element_ids": ["submit"], "label": "Bouton d’envoi", "view": "form"},
+        history=[{"role": "user", "text": "Rends le bouton plus visible"}],
         screenshot_data_url=capture,
         api_key="test-key",
         transport=httpx.MockTransport(handler),
     )
 
-    assert revision["design"]["field_style"] == "filled"
     assert revision["content"]["submit_label"] == "Être rappelé"
+    assert revision["design"]["style"]["accent"] == "#A8380F"
+    assert revision["touched"] == ["submit", "card"]
+    # Le reste du formulaire n'a pas bouge, consentement et tunnel compris.
+    assert revision["name"] == "Contact"
     assert revision["fields"][-1]["type"] == "consent"
-    assert revision["assistant_message"].startswith("J’ai adouci")
+    assert revision["thank_you"]["button_url"] == "https://exemple.fr"
+
+
+def test_revision_retries_once_when_a_guard_rail_fails():
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        context = json.loads(json.loads(request.content)["input"][0]["content"][0]["text"])
+        attempts.append(context.get("correction_demandee", ""))
+        if len(attempts) == 1:
+            return _ops_response("Fond sombre.", [{**THEME, "surface": "#111111", "ink": "#222222"}])
+        return _ops_response("Fond sombre et texte clair.", [{**THEME, "surface": "#111111", "ink": "#F5F5F5"}])
+
+    revision = revise_campaign(
+        CURRENT,
+        "Passe en sombre",
+        {"name": "Atelier Test"},
+        selection={"element_ids": ["card"], "label": "Formulaire complet", "view": "form"},
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(attempts) == 2
+    assert "Contraste insuffisant" in attempts[1]
+    assert revision["design"]["style"]["ink"] == "#F5F5F5"
+
+
+def test_revision_refuses_to_change_the_type_of_an_existing_field():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ops_response("Champ email transformé.", [
+            {"op": "remove_field", "id": "email"},
+            {"op": "add_field", "after": None, "field": {"id": "email", "label": "Votre nom", "type": "text", "required": True, "options": [], "scale": None, "placeholder": None}},
+        ])
+
+    with pytest.raises(LunaAPIError) as error:
+        revise_campaign(
+            CURRENT,
+            "Transforme le champ email en texte libre",
+            {"name": "Atelier Test"},
+            selection={"element_ids": ["field:email"], "label": "Champ email", "view": "form"},
+            api_key="test-key",
+            transport=httpx.MockTransport(handler),
+        )
+    assert "rester de type email" in str(error.value)

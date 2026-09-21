@@ -2,12 +2,15 @@ import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
 from typing import Literal
 from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from .luna_ops import LunaOps, OpsError, apply_ops, validate_state
 
 
 logger = logging.getLogger(__name__)
@@ -92,10 +95,6 @@ class LunaCampaign(BaseModel):
     thank_you_message: str = Field(min_length=10, max_length=260)
 
 
-class LunaRevision(LunaCampaign):
-    assistant_message: str = Field(min_length=3, max_length=240)
-
-
 LUNA_INSTRUCTIONS = """Tu es Luna, experte française en formulaires MOFU courts et conformes au RGPD.
 À partir du brief et de l'identité visuelle fournis, conçois une campagne utile, claire, naturelle et visuellement cohérente en français.
 
@@ -119,19 +118,23 @@ Contraintes impératives :
 """
 
 LUNA_REVISION_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de formulaires français.
-Tu reçois le formulaire actuel, une zone sélectionnée, une demande de modification et parfois une capture PNG de cette zone.
+Tu reçois l'état du formulaire, la zone que l'utilisateur a encadrée, sa demande, les derniers échanges et parfois une capture de cette zone.
+
+Tu ne réécris jamais le formulaire : tu renvoies un message court en français et la liste des opérations à appliquer.
 
 Contraintes impératives :
-- Retourne toujours le formulaire COMPLET : textes, champs, content (sur-titre, bouton, note de confiance), tous les tokens de design et toutes les valeurs de style, même si une seule zone change.
-- Le style est libre dans les bornes du schéma : couleurs, flou, rayons, glow et police. Applique franchement la direction demandée (futuriste, verre dépoli, sombre, minimal) plutôt qu'un ajustement timide.
-- Garde toujours un contraste lisible entre ink et surface, et entre accent_ink et accent.
-- Modifie en priorité la zone sélectionnée et préserve tout ce que l'utilisateur n'a pas demandé de changer.
-- Interprète la capture uniquement comme référence visuelle du formulaire vide. N'en extrais aucune donnée personnelle.
-- La campagne reste de type contact, sondage ou information. Ne crée jamais de formulaire de devis.
-- Garde entre 1 et 5 champs métier. N'ajoute pas de consentement : le serveur réinjecte sa version contrôlée.
-- Aucun CSS, HTML, script, URL d'image ou token hors des valeurs autorisées.
-- Réponds en français avec assistant_message : une phrase courte expliquant ce qui a été appliqué.
-- N'annonce jamais une modification que le schéma ne permet pas. Si la demande sort de ce que tu peux produire (image de fond, police hors liste, mise en page inédite), dis-le explicitement dans assistant_message et indique ce que tu as fait de plus proche.
+- N'agis que sur ce qui est demandé. Aucune opération superflue.
+- selection.element_ids dit ce que l'utilisateur a encadré : traite ces éléments en priorité.
+- set_text change un texte : titre (name), description, sur-titre (eyebrow), bouton (submit_label), note de confiance (trust_note), remerciement (thanks_title, thanks_message, thanks_button).
+- set_theme change les couleurs et les formes, set_structure la mise en page. Ose une direction affirmée quand la demande le suggère.
+- Le contraste est vérifié par le serveur : ink doit trancher franchement sur surface, et accent_ink sur accent (au moins 4,5:1). Une opération refusée te revient pour correction.
+- 5 champs métier maximum. Ne touche jamais au consentement : le serveur gère sa version légale.
+- Ne change jamais le type d'un champ existant : des réponses y sont déjà rattachées. Retire-le et ajoute-en un autre si c'est vraiment voulu.
+- L'action, l'URL et le code promo de la page de remerciement se règlent dans le tunnel : tu ne peux pas les modifier. Dis-le si on te le demande.
+- Interprète la capture comme une simple référence visuelle. N'en extrais aucune donnée personnelle.
+- Aucun CSS, HTML, script, URL d'image ni valeur hors du schéma.
+- Si la demande sort de ce que tu peux faire, renvoie l'opération ask et explique-le dans message.
+- message décrit en une phrase ce qui a été appliqué, sans jargon technique.
 """
 
 
@@ -371,75 +374,103 @@ def generate_campaign(
     return _normalize_ai_campaign(result, company_name)
 
 
-def revise_campaign(
-    current_campaign: dict,
-    instruction: str,
-    identity: str | dict,
-    *,
-    selection: dict,
-    screenshot_data_url: str | None,
-    api_key: str,
-    model: str = "gpt-5.4-mini",
-    timeout_seconds: float = 30.0,
-    transport: httpx.BaseTransport | None = None,
-) -> dict:
-    """Revise content and safe design tokens using optional visual context."""
-    if not api_key:
-        raise LunaAPIError("Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier le design avec Luna.")
-
-    company_name = _company_name(identity)
-    business_fields = [item for item in current_campaign.get("fields", []) if item.get("type") != "consent"][:5]
-    current_payload = {
-        "name": current_campaign.get("name"),
-        "description": current_campaign.get("description"),
-        "kind": current_campaign.get("kind"),
-        "fields": business_fields,
-        "design": current_campaign.get("design") or default_design(),
-        "content": current_campaign.get("content") or default_content(current_campaign.get("kind", "contact")),
-        "thank_you": current_campaign.get("thank_you"),
-    }
+def _revision_request(state: dict, instruction: str, identity: dict, *, selection: dict, history: list[dict], screenshot: str | None, model: str, correction: str = "") -> dict:
     user_context = {
         "instruction": instruction,
         "selection": selection,
-        "current_campaign": current_payload,
-        "identity": _safe_identity(identity),
+        "recent_exchanges": history[-6:],
+        "current_form": state,
+        "identity": identity,
     }
+    if correction:
+        user_context["correction_demandee"] = correction
     content = [{"type": "input_text", "text": json.dumps(user_context, ensure_ascii=False)}]
-    screenshot = _validate_screenshot(screenshot_data_url)
     if screenshot:
-        content.append({"type": "input_image", "image_url": screenshot, "detail": "low"})
-
-    safety_source = str(_safe_identity(identity).get("name") or "sillage-user")
-    request_payload = {
+        content.append({"type": "input_image", "image_url": screenshot, "detail": "high"})
+    safety_source = str(identity.get("name") or "sillage-user")
+    return {
         "model": model,
         "instructions": LUNA_REVISION_INSTRUCTIONS,
         "input": [{"role": "user", "content": content}],
         "text": {
             "format": {
                 "type": "json_schema",
-                "name": "sillage_campaign_revision",
+                "name": "sillage_form_ops",
                 "strict": True,
-                "schema": LunaRevision.model_json_schema(),
+                "schema": LunaOps.model_json_schema(),
             }
         },
-        "max_output_tokens": 1800,
+        "max_output_tokens": 700,
         "store": False,
         "safety_identifier": hashlib.sha256(safety_source.encode()).hexdigest()[:32],
     }
 
-    try:
-        result = LunaRevision.model_validate_json(_output_text(_request_openai(
-            request_payload,
+
+def revise_campaign(
+    current_campaign: dict,
+    instruction: str,
+    identity: str | dict,
+    *,
+    selection: dict,
+    history: list[dict] | None = None,
+    screenshot_data_url: str | None = None,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Applique une demande de modification sous forme d'operations validees.
+
+    Luna renvoie un message et quelques operations ; le serveur les applique,
+    les verifie (contraste, identifiants, nombre de champs) et, si un garde-fou
+    saute, redonne une chance au modele avec l'erreur en clair.
+    """
+    if not api_key:
+        raise LunaAPIError("Luna n'est pas connectée : renseignez la clé du service d'IA.")
+
+    state = {
+        "name": current_campaign.get("name"),
+        "description": current_campaign.get("description"),
+        "kind": current_campaign.get("kind"),
+        "fields": current_campaign.get("fields", []),
+        "design": current_campaign.get("design") or default_design(),
+        "content": current_campaign.get("content") or default_content(current_campaign.get("kind", "contact")),
+        "thank_you": current_campaign.get("thank_you") or {},
+    }
+    sent_state = {**state, "fields": [item for item in state["fields"] if item.get("type") != "consent"]}
+    safe_identity = _safe_identity(identity)
+    screenshot = _validate_screenshot(screenshot_data_url)
+
+    correction = ""
+    started = time.monotonic()
+    for attempt in (1, 2):
+        payload = _request_openai(
+            _revision_request(sent_state, instruction, safe_identity, selection=selection, history=history or [], screenshot=screenshot, model=model, correction=correction),
             api_key=api_key,
             timeout_seconds=timeout_seconds,
             transport=transport,
-        )))
-    except (ValidationError, LunaAPIError) as exc:
-        logger.warning("Luna revision failed: %s", type(exc).__name__)
-        if isinstance(exc, LunaAPIError):
-            raise
-        raise LunaAPIError("Luna n'a pas pu appliquer cette modification. Reformulez votre demande.") from exc
+        )
+        try:
+            result = LunaOps.model_validate_json(_output_text(payload))
+            revised, touched = apply_ops(state, result.ops)
+            validate_state(revised, state)
+        except (ValidationError, OpsError) as exc:
+            correction = str(exc)
+            logger.warning("Luna revision refused (attempt %s): %s", attempt, correction[:200])
+            if attempt == 2:
+                raise LunaAPIError(f"Luna n'a pas pu appliquer cette modification : {correction}") from exc
+            continue
 
-    normalized = _normalize_ai_campaign(result, company_name)
-    normalized["assistant_message"] = result.assistant_message
-    return normalized
+        usage = payload.get("usage") or {}
+        logger.info(
+            "Luna revision applied in %.1fs, attempt %s, %s ops, %s tokens",
+            time.monotonic() - started, attempt, len(result.ops), usage.get("total_tokens", "?"),
+        )
+        return {
+            **revised,
+            "assistant_message": result.message,
+            "touched": touched,
+            "ops": [operation.model_dump(exclude_none=True) for operation in result.ops],
+        }
+
+    raise LunaAPIError("Luna n'a pas pu appliquer cette modification. Reformulez votre demande.")

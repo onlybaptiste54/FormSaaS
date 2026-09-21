@@ -82,3 +82,39 @@ def test_thank_you_url_must_be_https(client):
         "thank_you": {"title": "Merci", "message": "Bien reçu", "action": "cta", "button_label": "Voir", "button_url": "http://exemple.fr"},
     })
     assert refused.status_code == 422
+
+
+def test_luna_revision_lands_in_the_draft_with_its_version(client, monkeypatch):
+    from app import main
+    from app.config import settings
+
+    campaign = active_campaign(client)
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+
+    def fake_revision(state, instruction, identity, **kwargs):
+        assert kwargs["selection"]["element_ids"] == ["submit"]
+        return {
+            **state,
+            "content": {**state["content"], "submit_label": "Être rappelé"},
+            "assistant_message": "Bouton renommé.",
+            "touched": ["submit"],
+            "ops": [{"op": "set_text", "target": "submit_label", "value": "Être rappelé"}],
+        }
+
+    monkeypatch.setattr(main, "revise_campaign", fake_revision)
+    result = client.post(f"/api/campaigns/{campaign['id']}/luna/refine", json={
+        "instruction": "Renomme le bouton",
+        "element_ids": ["submit"],
+        "selection_label": "le bouton",
+        "view": "form",
+    }).json()
+
+    assert result["touched"] == ["submit"]
+    assert result["campaign"]["draft"]["content"]["submit_label"] == "Être rappelé"
+    assert result["campaign"]["content"]["submit_label"] != "Être rappelé"
+
+    versions = client.get(f"/api/campaigns/{campaign['id']}/versions").json()
+    assert versions[-1]["instruction"] == "Renomme le bouton"
+    assert versions[-1]["message"] == "Bouton renommé."
+
+    client.post(f"/api/campaigns/{campaign['id']}/draft/discard")
