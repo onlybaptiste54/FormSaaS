@@ -11,7 +11,7 @@ import type { Campaign, Field, FormContent } from "@/lib/types";
 
 type Version = { id: string; source: string; instruction: string; message: string; created_at: string };
 type Rect = { x: number; y: number; width: number; height: number };
-type Selection = { rect: Rect; ids: string[]; label: string; dataUrl?: string };
+type Selection = { rect: Rect; ids: string[]; label: string; dataUrl?: string; capturing: boolean };
 
 /** Etat edite : le brouillon s'il existe, sinon le formulaire publie. */
 function editingState(campaign: Campaign): Campaign {
@@ -89,7 +89,8 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
   const [selection, setSelection] = useState<Selection | null>(null);
   const [dragRect, setDragRect] = useState<Rect | null>(null);
   const [instruction, setInstruction] = useState("");
-  const [pending, setPending] = useState("");
+  const [pending, setPending] = useState<{ text: string; images: string[] } | null>(null);
+  const [zoneInstruction, setZoneInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [touched, setTouched] = useState<string[]>([]);
@@ -174,26 +175,30 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     if (!rect || rect.width < 12 || rect.height < 12) return; // un simple clic n'est pas une selection
 
     const kept = elementsInside(canvasRef.current!, rect);
-    setSelection({ rect, ids: kept, label: selectionLabel(kept, draft.fields) });
+    setSelection({ rect, ids: kept, label: selectionLabel(kept, draft.fields), capturing: true });
     setTimeout(() => bubbleRef.current?.focus(), 30);
     try {
-      const dataUrl = await captureRegion(canvasRef.current!, rect);
-      setSelection(current => current && { ...current, dataUrl });
+      const dataUrl = await captureRegion(canvasRef.current!, rect, accentColor(draft));
+      setSelection(current => current && { ...current, dataUrl, capturing: false });
     } catch {
       // Sans capture, la demande part quand meme avec les elements encadres.
+      setSelection(current => current && { ...current, capturing: false });
     }
   }
 
-  async function send(event: FormEvent) {
+  async function send(event: FormEvent, zoneText?: string) {
     event.preventDefault();
-    const text = instruction.trim();
+    const text = (zoneText ?? instruction).trim();
     if (!text || busy) return;
     const current = selection;
     const joined = attachments;
     setBusy(true);
     setError("");
-    setPending(text);
+    // Tout ce qui part quitte la zone de saisie immediatement.
+    setPending({ text, images: [...(current?.dataUrl ? [current.dataUrl] : []), ...joined] });
     setInstruction("");
+    setZoneInstruction("");
+    setAttachments([]);
     setSelection(null);
     try {
       const result = await api<{ message: string; campaign: Campaign; touched: string[] }>(`/campaigns/${campaign.id}/luna/refine`, {
@@ -209,13 +214,13 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
       });
       onCampaignChange(result.campaign);
       setTouched(result.touched);
-      setAttachments([]);
       loadVersions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Luna n’a pas pu appliquer la modification.");
       setInstruction(text);
+      setAttachments(joined);
     } finally {
-      setPending("");
+      setPending(null);
       setBusy(false);
     }
   }
@@ -366,13 +371,20 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
             {dragRect && <div className="selection-rect" style={{ left: dragRect.x, top: dragRect.y, width: dragRect.width, height: dragRect.height }}/>}
             {selection && <>
               <div className="selection-rect kept" style={{ left: selection.rect.x, top: selection.rect.y, width: selection.rect.width, height: selection.rect.height }}/>
-              <form className="selection-bubble" style={{ left: selection.rect.x, top: selection.rect.y + selection.rect.height + 10 }} onSubmit={send} onMouseDown={event => event.stopPropagation()}>
+              <form className="selection-bubble" style={{ left: selection.rect.x, top: selection.rect.y + selection.rect.height + 10 }} onSubmit={event => void send(event, zoneInstruction)} onMouseDown={event => event.stopPropagation()}>
                 <span>{selection.label}</span>
-                <textarea ref={bubbleRef} value={instruction} maxLength={800} placeholder="Que voulez-vous changer ici ?" onChange={event => setInstruction(event.target.value)} disabled={!configured || busy}/>
+                <div className="bubble-capture">
+                  {selection.capturing
+                    ? <><LoaderCircle className="spin" size={14}/>Capture de la zone…</>
+                    : selection.dataUrl
+                      ? <><img src={selection.dataUrl} alt="Capture de la zone encadrée"/>Capture jointe</>
+                      : <><X size={14}/>Capture indisponible, la zone reste transmise</>}
+                </div>
+                <textarea ref={bubbleRef} value={zoneInstruction} maxLength={800} placeholder="Que voulez-vous changer ici ?" onChange={event => setZoneInstruction(event.target.value)} disabled={!configured || busy}/>
                 <Attachments images={attachments} onRemove={index => setAttachments(current => current.filter((_, position) => position !== index))} onAdd={attachFiles}/>
                 <div>
-                  <button type="button" onClick={() => setSelection(null)}>Annuler</button>
-                  <button className="button button-primary" disabled={!instruction.trim() || !configured || busy}>{busy ? <LoaderCircle className="spin" size={15}/> : <Send size={15}/>}Envoyer</button>
+                  <button type="button" onClick={() => { setSelection(null); setZoneInstruction(""); }}>Annuler</button>
+                  <button className="button button-primary" disabled={!zoneInstruction.trim() || !configured || busy}>{busy ? <LoaderCircle className="spin" size={15}/> : <Send size={15}/>}Envoyer</button>
                 </div>
               </form>
             </>}
@@ -392,11 +404,14 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
             <p>{message.text}</p>
             {message.role === "luna" && <button className="chat-undo" onClick={() => undoTo(message.versionId)} disabled={busy}><Undo2 size={13}/>Annuler cette modification</button>}
           </div>)}
-          {pending && <div className="chat-message user"><p>{pending}</p></div>}
+          {pending && <div className="chat-message user">
+            {pending.images.length > 0 && <div className="chat-message-images">{pending.images.map((image, index) => <img key={index} src={image} alt="Image envoyée à Luna"/>)}</div>}
+            <p>{pending.text}</p>
+          </div>}
           {busy && <div className="chat-message assistant thinking"><span/><span/><span/></div>}
           {error && <div className="chat-message assistant error"><p>{error}</p></div>}
         </div>
-        <form className="luna-chat-composer" onSubmit={send}>
+        <form className="luna-chat-composer" onSubmit={event => void send(event)}>
           <textarea value={instruction} maxLength={800} placeholder="Ex. Rends le bouton plus visible…" onChange={event => setInstruction(event.target.value)} disabled={!configured || busy}/>
           <Attachments images={attachments} onRemove={index => setAttachments(current => current.filter((_, position) => position !== index))} onAdd={attachFiles}/>
           <div className="composer-actions">
@@ -408,6 +423,10 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
       </aside>
     </div>
   </div>;
+}
+
+function accentColor(campaign: Campaign) {
+  return campaign.design?.style?.accent || "#2F6B4F";
 }
 
 /** Images jointes a la demande : capture externe, inspiration, photo. */

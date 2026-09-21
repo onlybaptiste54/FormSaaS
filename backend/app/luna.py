@@ -59,6 +59,9 @@ class LunaStyle(BaseModel):
     radius_px: int = Field(ge=0, le=48)
     glow: float = Field(ge=0, le=1)
     font: Literal["sans", "grotesk", "serif", "mono"]
+    heading_font: Literal["sans", "grotesk", "serif", "mono"]
+    title_scale: float = Field(ge=0.7, le=1.8)
+    title_case: Literal["normal", "uppercase"]
 
 
 class LunaDesign(BaseModel):
@@ -111,6 +114,7 @@ Contraintes impératives :
 - Le style est libre : sobre, chaleureux, sombre, futuriste ou verre dépoli selon le brief et l'identité. Ose une direction affirmée quand la demande le suggère, ne retombe pas systématiquement sur du neutre.
 - Pour un rendu verre / glassmorphism : dégradé de page sombre, surface_alpha entre 0.08 et 0.25, blur_px entre 16 et 32, border_alpha autour de 0.3, glow élevé.
 - Pour un rendu clair et sobre : surface_alpha proche de 1, blur_px à 0, glow bas.
+- heading_font, title_scale (0,7 à 1,8) et title_case donnent le caractère des titres : c'est là que se joue une direction artistique affirmée.
 - Contrainte non négociable : le contraste doit rester lisible. ink doit trancher franchement sur surface, et accent_ink sur accent.
 - N'utilise jamais de CSS, HTML, URL d'image ou valeur libre pour le design.
 - Le titre de remerciement peut contenir {prenom} si un champ de nom est présent.
@@ -127,7 +131,7 @@ Contraintes impératives :
 - N'agis que sur ce qui est demandé. Aucune opération superflue.
 - selection.element_ids dit ce que l'utilisateur a encadré : traite ces éléments en priorité.
 - set_text change un texte : titre (name), description, sur-titre (eyebrow), bouton (submit_label), note de confiance (trust_note), remerciement (thanks_title, thanks_message, thanks_button).
-- set_theme change les couleurs et les formes, set_structure la mise en page ainsi que l'affichage du bloc de marque (brand_display, brand_size). Le fichier du logo lui-même se remplace dans les paramètres ou par un double-clic sur le logo : dis-le si on te demande de le changer. Ose une direction affirmée quand la demande le suggère.
+- set_theme change les couleurs, les formes et la typographie : heading_font, title_scale et title_case agissent sur les titres. set_structure la mise en page ainsi que l'affichage du bloc de marque (brand_display, brand_size). Le fichier du logo lui-même se remplace dans les paramètres ou par un double-clic sur le logo : dis-le si on te demande de le changer. Ose une direction affirmée quand la demande le suggère.
 - Le contraste est vérifié par le serveur : ink doit trancher franchement sur surface, et accent_ink sur accent (au moins 4,5:1). Une opération refusée te revient pour correction.
 - 5 champs métier maximum. Ne touche jamais au consentement : le serveur gère sa version légale.
 - Ne change jamais le type d'un champ existant : des réponses y sont déjà rattachées. Retire-le et ajoute-en un autre si c'est vraiment voulu.

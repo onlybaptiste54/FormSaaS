@@ -39,6 +39,9 @@ export const DEFAULT_FORM_STYLE: FormStyle = {
   radius_px: 18,
   glow: 0,
   font: "sans",
+  heading_font: "serif",
+  title_scale: 1,
+  title_case: "normal",
 };
 
 export const DEFAULT_FORM_DESIGN: FormDesign = {
@@ -111,5 +114,8 @@ export function formStyleVars(design?: Partial<FormDesign>): CSSProperties {
     "--f-radius": `${style.radius_px}px`,
     "--f-glow": style.glow,
     "--f-font": FONT_STACKS[style.font] || FONT_STACKS.sans,
+    "--f-heading-font": FONT_STACKS[style.heading_font || "serif"] || FONT_STACKS.serif,
+    "--f-title-scale": style.title_scale ?? 1,
+    "--f-title-case": style.title_case === "uppercase" ? "uppercase" : "none",
   } as CSSProperties;
 }

@@ -14,6 +14,9 @@ export type FormStyle = {
   radius_px: number;
   glow: number;
   font: "sans" | "grotesk" | "serif" | "mono";
+  heading_font?: "sans" | "grotesk" | "serif" | "mono";
+  title_scale?: number;
+  title_case?: "normal" | "uppercase";
 };
 export type FormContent = { eyebrow: string; submit_label: string; trust_note: string };
 export type FormDesign = {

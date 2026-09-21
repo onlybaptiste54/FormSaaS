@@ -35,6 +35,9 @@ STYLE = {
     "radius_px": 28,
     "glow": 0.7,
     "font": "grotesk",
+    "heading_font": "serif",
+    "title_scale": 1.2,
+    "title_case": "normal",
 }
 
 AI_DESIGN = {**DESIGN, "style": STYLE}
@@ -129,7 +132,7 @@ CURRENT = {
 
 THEME = {"op": "set_theme", "page_from": None, "page_to": None, "surface": None, "surface_alpha": None, "border": None,
          "border_alpha": None, "ink": None, "ink_soft": None, "accent": None, "accent_ink": None, "blur_px": None,
-         "radius_px": None, "glow": None, "font": None}
+         "radius_px": None, "glow": None, "font": None, "heading_font": None, "title_scale": None, "title_case": None}
 
 
 def test_revision_applies_only_the_requested_operations():

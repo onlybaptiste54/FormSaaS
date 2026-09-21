@@ -4,7 +4,7 @@ from app.luna_ops import LunaOps, OpsError, apply_ops, contrast_ratio, validate_
 
 
 THEME_KEYS = ("page_from", "page_to", "surface", "surface_alpha", "border", "border_alpha", "ink", "ink_soft",
-              "accent", "accent_ink", "blur_px", "radius_px", "glow", "font")
+              "accent", "accent_ink", "blur_px", "radius_px", "glow", "font", "heading_font", "title_scale", "title_case")
 FIELD_KEYS = ("label", "placeholder", "required", "options", "scale")
 
 
@@ -90,6 +90,13 @@ def test_the_thank_you_action_and_url_stay_out_of_reach():
     assert after["thank_you"]["title"] == "À très vite {prenom} !"
     assert after["thank_you"]["action"] == "cta"
     assert after["thank_you"]["button_url"] == "https://exemple.fr"
+
+
+def test_titles_can_be_restyled():
+    after, touched = run([theme(heading_font="serif", title_scale=1.4, title_case="uppercase")])
+    assert after["design"]["style"]["title_scale"] == 1.4
+    assert after["design"]["style"]["heading_font"] == "serif"
+    assert "title" in touched
 
 
 def test_a_question_changes_nothing():

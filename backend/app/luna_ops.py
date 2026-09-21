@@ -99,6 +99,10 @@ class SetTheme(Strict):
     radius_px: int | None = Field(ge=0, le=48)
     glow: float | None = Field(ge=0, le=1)
     font: Literal["sans", "grotesk", "serif", "mono"] | None
+    heading_font: Literal["sans", "grotesk", "serif", "mono"] | None
+    # Taille des titres, de 0,7 a 1,8 fois la taille de base.
+    title_scale: float | None = Field(ge=0.7, le=1.8)
+    title_case: Literal["normal", "uppercase"] | None
 
 
 class SetStructure(Strict):
@@ -237,8 +241,11 @@ def apply_ops(state: dict, ops: list[Operation]) -> tuple[dict, list[str]]:
         elif isinstance(operation, SetTheme):
             style = result["design"].setdefault("style", {})
             for key, value in operation.model_dump(exclude={"op"}).items():
-                if value is not None:
-                    style[key] = value
+                if value is None:
+                    continue
+                style[key] = value
+                if key.startswith("heading_") or key.startswith("title_"):
+                    touched.append("title")
             touched.append("card")
 
         elif isinstance(operation, SetStructure):
