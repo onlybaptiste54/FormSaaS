@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
 from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, revise_campaign, slugify
+from .luna_ops import contrast_ratio
 from .models import Campaign, CampaignVersion, Company, FormResponse, Template, User
 from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
@@ -70,9 +71,28 @@ def version_json(version: CampaignVersion):
     return {"id": version.id, "source": version.source, "instruction": version.instruction, "message": version.message, "created_at": version.created_at.isoformat()}
 
 
+def campaign_health(c: Campaign, company: Company) -> dict:
+    """Score de qualite reellement calcule, avec les points a corriger."""
+    state = editing_state(c)
+    business = [field for field in state["fields"] if field.get("type") != "consent"]
+    style = (state["design"] or {}).get("style") or {}
+    required = [field for field in business if field.get("required")]
+    checks = [
+        {"label": "Formulaire court", "ok": len(business) <= 5, "hint": "Retirez un champ : cinq suffisent."},
+        {"label": "Peu de champs obligatoires", "ok": len(required) <= 3, "hint": "Rendez un champ facultatif pour limiter les abandons."},
+        {"label": "Consentement conforme", "ok": any(field.get("type") == "consent" for field in state["fields"]), "hint": "Le consentement RGPD doit rester présent."},
+        {"label": "Texte lisible", "ok": not (style.get("ink") and style.get("surface")) or contrast_ratio(style["ink"], style["surface"]) >= 4.5, "hint": "Augmentez le contraste entre le texte et la carte."},
+        {"label": "Bouton lisible", "ok": not (style.get("accent_ink") and style.get("accent")) or contrast_ratio(style["accent_ink"], style["accent"]) >= 4.5, "hint": "Augmentez le contraste du bouton."},
+        {"label": "Contact RGPD renseigné", "ok": bool(company.dpo_email), "hint": "Ajoutez l'email DPO dans les paramètres."},
+        {"label": "Remerciement personnalisé", "ok": bool((state["thank_you"] or {}).get("message")), "hint": "Écrivez un message de remerciement."},
+    ]
+    score = round(sum(check["ok"] for check in checks) / len(checks) * 100)
+    return {"score": score, "checks": checks}
+
+
 def campaign_json(c: Campaign):
     responses = len(c.responses)
-    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "content": c.content or default_content(c.kind), "thank_you": c.thank_you, "draft": c.draft, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
+    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "content": c.content or default_content(c.kind), "thank_you": c.thank_you, "draft": c.draft, "health": campaign_health(c, c.company), "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
 
 
 def saved_template_json(template: Template):

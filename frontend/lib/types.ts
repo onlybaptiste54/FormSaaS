@@ -27,8 +27,9 @@ export type FormDesign = {
   background?: "warm" | "mist" | "white" | "ink";
   radius?: "subtle" | "rounded" | "pill";
 };
+export type CampaignHealth = { score: number; checks: { label: string; ok: boolean; hint: string }[] };
 export type CampaignDraft = Partial<Pick<Campaign, "name" | "description" | "fields" | "design" | "content" | "thank_you">>;
-export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; draft: CampaignDraft | null; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; draft: CampaignDraft | null; health: CampaignHealth; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
 export type LibraryTemplate = {
   id?: string;
   key: string;

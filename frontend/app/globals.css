@@ -737,3 +737,6 @@ to{opacity:1;transform:translateY(0)}}
 .brand-toggle.on{border-color:var(--brand);color:var(--brand);background:var(--brand-pale)}
 .brand-toggle i{width:16px;height:16px;border-radius:5px;border:1px solid currentColor;display:flex;align-items:center;justify-content:center}
 .brand-toggle.on i{background:var(--brand);border-color:var(--brand);color:#fff}
+.health-card li.todo{color:var(--amber)}
+.health-card li svg{flex-shrink:0}
+.detail-grid{align-items:start}

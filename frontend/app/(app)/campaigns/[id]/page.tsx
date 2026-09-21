@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, BarChart3, Check, Code2, Copy, Download, Eye, FileText, Globe2, Link2, MessageSquareText, Save, Send, Settings2, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, BarChart3, Check, Code2, Copy, Download, Eye, FileText, Globe2, Link2, MessageSquareText, Save, Send, Settings2, X } from "lucide-react";
 import { LunaFormEditor } from "@/components/luna-form-editor";
 import { useMe } from "@/components/shell";
 import { Badge, ErrorState, Loading } from "@/components/ui";
@@ -80,6 +80,12 @@ function Overview({ campaign, onEdit }: { campaign: Campaign; onEdit: () => void
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">FORMULAIRE</p><h2>{campaign.fields.length} champs configurés</h2></div><button className="text-link" onClick={onEdit}>Modifier avec Luna</button></div>
         <div className="field-summary">{campaign.fields.map((field, index) => <div key={field.id}><span>{String(index + 1).padStart(2, "0")}</span><strong>{field.label}</strong><small>{labelType(field.type)}{field.required ? " · requis" : ""}</small></div>)}</div>
+      </article>
+      <article className="panel health-card">
+        <p className="eyebrow">QUALITÉ</p>
+        <h2>{campaign.health.score >= 85 ? "Prête à convertir" : campaign.health.score >= 60 ? "Quelques réglages" : "À revoir"}</h2>
+        <div className="health-score"><strong>{campaign.health.score}</strong><span>/100</span></div>
+        <ul>{campaign.health.checks.map(check => <li key={check.label} className={check.ok ? "" : "todo"}>{check.ok ? <Check/> : <AlertCircle/>}<span>{check.ok ? check.label : check.hint}</span></li>)}</ul>
       </article>
       <article className="panel">
         <p className="eyebrow">INFORMATIONS</p>
