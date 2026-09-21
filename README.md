@@ -32,21 +32,22 @@ Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour rep
 ## Fonctionnalités livrées
 
 - Connexion sécurisée par jeton et rôles préparés côté données
-- Identité d’entreprise : juridique, palette, ton et contact DPO
-- Création par prompt avec Luna via l’API OpenAI Responses et sortie structurée
-- Design généré par tokens sûrs, aperçu en direct et modification conversationnelle
-- Capture ciblée d’un bloc du formulaire, jointe visuellement au chat Luna
-- Génération adaptée aux contacts, sondages, événements et visites de chantier
-- Règle MOFU : 5 champs métier maximum, plus consentement
-- Gestion des campagnes : statut, visibilité, duplication et archivage
-- Formulaire public responsive, pré-remplissage URL possible côté architecture
-- Validation des champs et consentement explicite non pré-coché
-- Preuve de consentement : texte, date, IP et user-agent
-- Page de remerciement et tunnel à option unique
-- Dashboard : activité, sources, conversion et réponses récentes
+- Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
+- Création par brief avec Luna via l’API OpenAI Responses et sortie structurée, contexte et images de référence
+- Un seul moteur de rendu pour l’éditeur, le formulaire public et les vignettes : l’aperçu est le formulaire
+- Modification par opérations : Luna renvoie quelques changements typés, le serveur les applique et les vérifie
+- Sélection au rectangle dans l’éditeur, capture automatique de la zone avec son vrai fond
+- Édition directe des textes au double-clic, sans passer par l’IA
+- Brouillon séparé du formulaire en ligne, historique des versions et annulation par étape
+- Garde-fous serveur : 5 champs métier, identifiants et types conservés, contraste WCAG 4,5:1, tunnel intouchable
+- Gestion des campagnes : statut, visibilité, duplication, archivage et restauration
+- Formulaire public responsive, validation par champ, pré-remplissage et suivi par canal (`?source=`)
+- Consentement explicite non pré-coché, avec preuve : texte, date, IP et user-agent
+- Page de remerciement, bouton ou redirection, aperçu dans l’éditeur
+- Dashboard : activité, sources, conversion, brouillons à publier et réponses récentes
 - Tableau des réponses et export CSV UTF-8
-- Bibliothèque unifiée : modèles populaires, collection d’entreprise, aperçus complets et campagnes récentes
-- Ajout idempotent d’un modèle public et création de campagne indépendante en un clic
+- Bibliothèque : sélection Sillage, collection d’entreprise, aperçus en rendu réel et campagnes récentes
+- Diffusion : liens suivis par canal et code d’intégration à copier
 - Données de démonstration réalistes injectées au premier lancement
 
 ## Architecture
@@ -77,7 +78,7 @@ Variables principales :
 | `OPENAI_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_TIMEOUT_SECONDS` | `30` |
 
-Avec une clé configurée, Luna transmet à OpenAI uniquement le brief de campagne, le contenu du formulaire vide, le nom commercial, le secteur, le ton et les couleurs de marque. Lors d’une modification visuelle, la capture PNG de la zone explicitement sélectionnée est également envoyée. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement pour la création lorsqu’aucune clé n’est configurée.
+Avec une clé configurée, Luna transmet à OpenAI le brief de campagne, le contenu du formulaire vide, les six derniers échanges de la conversation, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque (palette, police, règles). Lors d’une modification visuelle, la capture PNG de la zone encadrée est jointe. Les images de charte déposées dans les paramètres et les images de référence ajoutées à un brief sont envoyées au moment de l’analyse, puis oubliées : elles ne sont pas stockées. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement pour la création lorsqu’aucune clé n’est configurée.
 
 ## Développement sans Docker
 
@@ -111,4 +112,6 @@ docker compose config
 
 ## Suite produit recommandée
 
-Les interfaces sont prêtes à accueillir les autres briques plus lourdes du cahier des charges : WebSocket temps réel, QR codes dynamiques, exports PDF/XLSX, webhooks, synchronisation Google Sheets, PWA hors-ligne et serveur MCP. Elles n’ont volontairement pas été simulées par de faux connecteurs dans ce MVP.
+Les interfaces sont prêtes à accueillir les autres briques plus lourdes du cahier des charges : WebSocket temps réel, QR codes dynamiques, exports PDF/XLSX, webhooks, synchronisation Google Sheets, PWA hors-ligne et serveur MCP. Elles n’ont volontairement pas été simulées par de faux connecteurs.
+
+Côté produit, les suites naturelles du chantier Luna sont une boîte de réception transverse pour les réponses, des variantes A/B arbitrées par la conversion, et un mode « une question par écran » pour le formulaire public.

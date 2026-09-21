@@ -19,13 +19,22 @@ def initialize_schema():
         with engine.begin() as connection:
             connection.execute(text("SELECT pg_advisory_xact_lock(736455141)"))
             Base.metadata.create_all(bind=connection)
-            connection.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS design JSON"))
+            for column in ("design", "content", "draft", "brief"):
+                connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS {column} JSON"))
+            connection.execute(text("ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo TEXT DEFAULT ''"))
+            connection.execute(text("ALTER TABLE companies ADD COLUMN IF NOT EXISTS brand JSON"))
         return
     Base.metadata.create_all(bind=engine)
     columns = {column["name"] for column in inspect(engine).get_columns("campaigns")}
-    if "design" not in columns:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE campaigns ADD COLUMN design JSON"))
+    for column in ("design", "content", "draft", "brief"):
+        if column not in columns:
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN {column} JSON"))
+    company_columns = {column["name"] for column in inspect(engine).get_columns("companies")}
+    for column, kind in (("logo", "TEXT"), ("brand", "JSON")):
+        if column not in company_columns:
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE companies ADD COLUMN {column} {kind}"))
 
 
 def get_db():

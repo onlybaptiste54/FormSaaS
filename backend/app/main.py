@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -11,16 +12,19 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .luna import LunaAPIError, default_design, generate_campaign, revise_campaign, slugify
-from .models import Campaign, Company, FormResponse, Template, User
-from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, LunaRefineRequest, SubmitResponse
+from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, revise_campaign, slugify
+from .luna_ops import contrast_ratio
+from .models import Campaign, CampaignVersion, Company, FormResponse, Template, User
+from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
 from .seed import seed
-from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_payload
+from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Les mesures de Luna (duree, tentatives, tokens) doivent etre visibles.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     initialize_schema()
     with SessionLocal() as db:
         seed(db)
@@ -31,9 +35,67 @@ app = FastAPI(title="Sillage API", version="1.0.0", lifespan=lifespan, docs_url=
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
+EDITABLE_KEYS = ("name", "description", "fields", "design", "content", "thank_you")
+
+# Nombre de versions conservees par campagne.
+VERSION_LIMIT = 30
+
+
+def published_state(c: Campaign) -> dict:
+    """Etat en ligne du formulaire : ce que voit un visiteur."""
+    return {
+        "name": c.name,
+        "description": c.description,
+        "fields": c.fields,
+        "design": c.design or default_design(),
+        "content": c.content or default_content(c.kind),
+        "thank_you": c.thank_you,
+    }
+
+
+def editing_state(c: Campaign) -> dict:
+    """Etat en cours d'edition : le brouillon s'il existe, sinon le publie."""
+    return {**published_state(c), **(c.draft or {})}
+
+
+def record_version(db: Session, campaign: Campaign, snapshot: dict, *, source: str, instruction: str = "", message: str = "") -> CampaignVersion:
+    version = CampaignVersion(campaign_id=campaign.id, snapshot=snapshot, source=source, instruction=instruction, message=message)
+    db.add(version)
+    db.flush()
+    extra = db.scalars(
+        select(CampaignVersion).where(CampaignVersion.campaign_id == campaign.id).order_by(desc(CampaignVersion.created_at)).offset(VERSION_LIMIT)
+    ).all()
+    for old in extra:
+        db.delete(old)
+    return version
+
+
+def version_json(version: CampaignVersion):
+    return {"id": version.id, "source": version.source, "instruction": version.instruction, "message": version.message, "created_at": version.created_at.isoformat()}
+
+
+def campaign_health(c: Campaign, company: Company) -> dict:
+    """Score de qualite reellement calcule, avec les points a corriger."""
+    state = editing_state(c)
+    business = [field for field in state["fields"] if field.get("type") != "consent"]
+    style = (state["design"] or {}).get("style") or {}
+    required = [field for field in business if field.get("required")]
+    checks = [
+        {"label": "Formulaire court", "ok": len(business) <= 5, "hint": "Retirez un champ : cinq suffisent."},
+        {"label": "Peu de champs obligatoires", "ok": len(required) <= 3, "hint": "Rendez un champ facultatif pour limiter les abandons."},
+        {"label": "Consentement conforme", "ok": any(field.get("type") == "consent" for field in state["fields"]), "hint": "Le consentement RGPD doit rester présent."},
+        {"label": "Texte lisible", "ok": not (style.get("ink") and style.get("surface")) or contrast_ratio(style["ink"], style["surface"]) >= 4.5, "hint": "Augmentez le contraste entre le texte et la carte."},
+        {"label": "Bouton lisible", "ok": not (style.get("accent_ink") and style.get("accent")) or contrast_ratio(style["accent_ink"], style["accent"]) >= 4.5, "hint": "Augmentez le contraste du bouton."},
+        {"label": "Contact RGPD renseigné", "ok": bool(company.dpo_email), "hint": "Ajoutez l'email DPO dans les paramètres."},
+        {"label": "Remerciement personnalisé", "ok": bool((state["thank_you"] or {}).get("message")), "hint": "Écrivez un message de remerciement."},
+    ]
+    score = round(sum(check["ok"] for check in checks) / len(checks) * 100)
+    return {"score": score, "checks": checks}
+
+
 def campaign_json(c: Campaign):
     responses = len(c.responses)
-    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
+    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "content": c.content or default_content(c.kind), "thank_you": c.thank_you, "draft": c.draft, "health": campaign_health(c, c.company), "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
 
 
 def saved_template_json(template: Template):
@@ -46,6 +108,7 @@ def saved_template_json(template: Template):
         "fields": template.fields,
         "field_count": len(template.fields),
         "design": template.design or default_design(),
+        "content": default_content(template_kind(template.category)),
         "thank_you": template.thank_you,
         "uses": template.uses,
         "created_at": template.created_at.isoformat(),
@@ -54,8 +117,7 @@ def saved_template_json(template: Template):
 
 
 def campaign_from_template(template: dict, user: User) -> Campaign:
-    category = template.get("category", "Contact")
-    kind = {"Contact": "contact", "Sondage": "survey", "Information": "information"}.get(category, "contact")
+    kind = template_kind(template.get("category", "Contact"))
     return Campaign(
         company_id=user.company_id,
         creator_id=user.id,
@@ -67,17 +129,31 @@ def campaign_from_template(template: dict, user: User) -> Campaign:
         visibility="private",
         fields=campaign_fields(template["fields"], user.company.name),
         design=template.get("design") or default_design(),
+        content=default_content(kind),
         thank_you=template.get("thank_you") or template_payload(template)["thank_you"],
     )
 
 
+def luna_history(campaign: Campaign) -> list[dict]:
+    """Derniers echanges, pour que Luna se souvienne de la conversation."""
+    turns = []
+    for version in campaign.versions[-6:]:
+        if version.instruction:
+            turns.append({"role": "user", "text": version.instruction})
+        if version.message and version.source == "luna":
+            turns.append({"role": "luna", "text": version.message})
+    return turns
+
+
 def luna_identity(company: Company) -> dict:
+    """Ce que Luna sait de la marque : rien de personnel, rien de juridique."""
     return {
         "name": company.name,
         "sector": company.sector,
         "tone": company.tone,
         "primary_color": company.primary_color,
         "accent_color": company.accent_color,
+        "brand": company.brand or {},
     }
 
 
@@ -97,7 +173,7 @@ def login(data: LoginIn, db: Session = Depends(get_db)):
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
     c = user.company
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "company": {"id": c.id, "name": c.name, "legal_name": c.legal_name, "sector": c.sector, "siret": c.siret, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "tone": c.tone, "dpo_email": c.dpo_email}}
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "company": {"id": c.id, "name": c.name, "legal_name": c.legal_name, "sector": c.sector, "siret": c.siret, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "tone": c.tone, "dpo_email": c.dpo_email, "logo": c.logo, "brand": c.brand or {}}}
 
 
 @app.get("/api/luna/status")
@@ -118,6 +194,22 @@ def update_company(data: CompanyUpdate, db: Session = Depends(get_db), user: Use
     return me(user)
 
 
+@app.post("/api/company/brand/analyze")
+def analyze_company_brand(data: BrandAnalyzeRequest, user: User = Depends(current_user)):
+    """Propose un profil de marque : rien n'est enregistre tant qu'il n'est pas valide."""
+    try:
+        return analyze_brand(
+            data.images,
+            luna_identity(user.company),
+            notes=data.notes,
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @app.get("/api/stats")
 def stats(db: Session = Depends(get_db), user: User = Depends(current_user)):
     campaigns = db.scalars(select(Campaign).where(Campaign.company_id == user.company_id, Campaign.archived.is_(False))).all()
@@ -134,6 +226,12 @@ def stats(db: Session = Depends(get_db), user: User = Depends(current_user)):
     sources = db.execute(select(FormResponse.source, func.count(FormResponse.id)).where(FormResponse.campaign_id.in_(ids)).group_by(FormResponse.source).order_by(desc(func.count(FormResponse.id)))) if ids else []
     recent = db.scalars(select(FormResponse).where(FormResponse.campaign_id.in_(ids)).order_by(desc(FormResponse.created_at)).limit(5)).all() if ids else []
     return {"campaigns": len(campaigns), "active": sum(c.status == "active" for c in campaigns), "responses": total or 0, "week_responses": week or 0, "conversion": round((total / visits * 100) if visits else 0, 1), "daily": daily, "sources": [{"name": name, "count": count} for name, count in sources], "recent": [{"id": r.id, "campaign": r.campaign.name, "name": r.answers.get("name", "Réponse anonyme"), "source": r.source, "created_at": r.created_at.isoformat()} for r in recent]}
+
+
+@app.get("/api/team")
+def team(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    members = db.scalars(select(User).where(User.company_id == user.company_id).order_by(User.created_at)).all()
+    return [{"id": m.id, "full_name": m.full_name, "email": m.email, "role": m.role} for m in members]
 
 
 @app.get("/api/campaigns")
@@ -206,16 +304,21 @@ def use_saved_template(template_id: str, db: Session = Depends(get_db), user: Us
 @app.post("/api/campaigns", status_code=201)
 def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     try:
+        identity = luna_identity(user.company)
+        if not data.use_brand:
+            identity = {**identity, "brand": {}}
         generated = generate_campaign(
             data.prompt,
-            luna_identity(user.company),
+            identity,
+            context=data.context,
+            images=data.images,
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             timeout_seconds=settings.openai_timeout_seconds,
         )
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
-    campaign = Campaign(company_id=user.company_id, creator_id=user.id, **generated)
+    campaign = Campaign(company_id=user.company_id, creator_id=user.id, brief={"prompt": data.prompt, "context": data.context}, **generated)
     db.add(campaign)
     db.commit()
     db.refresh(campaign)
@@ -248,23 +351,18 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     if not settings.openai_api_key:
         raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier le design avec Luna.")
     campaign = owned_campaign(campaign_id, db, user)
+    state = editing_state(campaign)
     try:
         revision = revise_campaign(
-            {
-                "name": campaign.name,
-                "description": campaign.description,
-                "kind": campaign.kind,
-                "fields": campaign.fields,
-                "design": campaign.design or default_design(),
-                "thank_you": campaign.thank_you,
-            },
+            {**state, "kind": campaign.kind, "brief": campaign.brief or {}},
             data.instruction,
             luna_identity(user.company),
             selection={
-                "kind": data.selection_kind,
-                "id": data.selection_id,
+                "element_ids": data.element_ids,
                 "label": data.selection_label,
+                "view": data.view,
             },
+            history=luna_history(campaign),
             screenshot_data_url=data.screenshot_data_url,
             api_key=settings.openai_api_key,
             model=settings.openai_model,
@@ -273,18 +371,85 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
 
-    for key in ("name", "description", "kind", "fields", "design", "thank_you"):
-        setattr(campaign, key, revision[key])
+    if campaign.draft is None and not campaign.versions:
+        record_version(db, campaign, published_state(campaign), source="initial", message="Version publiée")
+    campaign.draft = {key: revision[key] for key in EDITABLE_KEYS}
+    version = record_version(db, campaign, campaign.draft, source="luna", instruction=data.instruction, message=revision["assistant_message"])
     db.commit()
     db.refresh(campaign)
-    return {"message": revision["assistant_message"], "campaign": campaign_json(campaign)}
+    return {
+        "message": revision["assistant_message"],
+        "campaign": campaign_json(campaign),
+        "version": version_json(version),
+        "touched": revision["touched"],
+        "ops": revision["ops"],
+    }
+
+
+@app.get("/api/campaigns/{campaign_id}/versions")
+def list_versions(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    campaign = owned_campaign(campaign_id, db, user)
+    return [version_json(version) for version in campaign.versions]
+
+
+@app.patch("/api/campaigns/{campaign_id}/draft")
+def update_draft(campaign_id: str, data: DraftUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Edition directe : ce qui est corrige a la main va aussi dans le brouillon."""
+    campaign = owned_campaign(campaign_id, db, user)
+    changes = data.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(422, "Aucune modification transmise")
+    if campaign.draft is None and not campaign.versions:
+        record_version(db, campaign, published_state(campaign), source="initial", message="Version publiée")
+    campaign.draft = {**editing_state(campaign), **changes}
+    record_version(db, campaign, campaign.draft, source="manual", message="Modification manuelle")
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/campaigns/{campaign_id}/draft/publish")
+def publish_draft(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    campaign = owned_campaign(campaign_id, db, user)
+    if not campaign.draft:
+        raise HTTPException(422, "Aucune modification à publier")
+    for key, value in campaign.draft.items():
+        if key in EDITABLE_KEYS:
+            setattr(campaign, key, value)
+    campaign.draft = None
+    record_version(db, campaign, published_state(campaign), source="publish", message="Modifications publiées")
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/campaigns/{campaign_id}/draft/discard")
+def discard_draft(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    campaign = owned_campaign(campaign_id, db, user)
+    campaign.draft = None
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
+
+
+@app.post("/api/campaigns/{campaign_id}/versions/{version_id}/restore")
+def restore_version(campaign_id: str, version_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Annuler, c'est revenir a une version precedente : rien n'est perdu."""
+    campaign = owned_campaign(campaign_id, db, user)
+    version = db.get(CampaignVersion, version_id)
+    if not version or version.campaign_id != campaign.id:
+        raise HTTPException(404, "Version introuvable")
+    campaign.draft = {key: value for key, value in version.snapshot.items() if key in EDITABLE_KEYS}
+    record_version(db, campaign, campaign.draft, source="restore", message="Retour à une version précédente")
+    db.commit()
+    db.refresh(campaign)
+    return campaign_json(campaign)
 
 
 @app.post("/api/campaigns/{campaign_id}/duplicate", status_code=201)
 def duplicate_campaign(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = owned_campaign(campaign_id, db, user)
-    generated = generate_campaign(source.description or source.name, user.company.name)
-    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=generated["slug"], description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), thank_you=source.thank_you, visibility="private")
+    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=slugify(source.name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=source.thank_you, visibility="private")
     db.add(copy)
     db.commit()
     db.refresh(copy)
@@ -325,10 +490,17 @@ def public_campaign(slug: str, db: Session = Depends(get_db)):
     campaign = db.scalar(select(Campaign).where(Campaign.slug == slug, Campaign.archived.is_(False)))
     if not campaign:
         raise HTTPException(404, "Formulaire introuvable")
-    campaign.visits += 1
-    db.commit()
     c = campaign.company
-    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "thank_you": campaign.thank_you, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
+    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "content": campaign.content or default_content(campaign.kind), "thank_you": campaign.thank_you, "status": campaign.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email, "logo": c.logo}}
+
+
+@app.post("/api/public/{slug}/visit", status_code=204)
+def track_visit(slug: str, db: Session = Depends(get_db)):
+    """Une visite par session, comptée par le navigateur : un GET ne doit rien écrire."""
+    campaign = db.scalar(select(Campaign).where(Campaign.slug == slug, Campaign.status == "active", Campaign.archived.is_(False)))
+    if campaign:
+        campaign.visits += 1
+        db.commit()
 
 
 @app.post("/api/public/{slug}/submit", status_code=201)

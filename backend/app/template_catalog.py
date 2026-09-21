@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+from .luna import default_content
+
 
 CURATED_TEMPLATES = [
     {
@@ -7,7 +9,6 @@ CURATED_TEMPLATES = [
         "name": "Contact artisan",
         "category": "Contact",
         "description": "Qualification courte pour une intervention, son urgence et le rappel.",
-        "weekly_uses": 284,
         "minutes": 2,
         "accent": "#2F6B4F",
         "fields": [
@@ -23,7 +24,6 @@ CURATED_TEMPLATES = [
         "name": "Satisfaction client",
         "category": "Sondage",
         "description": "Mesurez la qualité perçue sans fatiguer vos clients.",
-        "weekly_uses": 231,
         "minutes": 1,
         "accent": "#665C9A",
         "fields": [
@@ -38,7 +38,6 @@ CURATED_TEMPLATES = [
         "name": "Inscription événement",
         "category": "Information",
         "description": "Une inscription fluide pour ateliers, portes ouvertes et rencontres.",
-        "weekly_uses": 196,
         "minutes": 2,
         "accent": "#D96C55",
         "fields": [
@@ -54,7 +53,6 @@ CURATED_TEMPLATES = [
         "name": "Brief découverte",
         "category": "Contact",
         "description": "Cadrez un premier échange commercial avec les bonnes informations.",
-        "weekly_uses": 173,
         "minutes": 3,
         "accent": "#347A78",
         "fields": [
@@ -70,7 +68,6 @@ CURATED_TEMPLATES = [
         "name": "Retour d’expérience",
         "category": "Sondage",
         "description": "Recueillez un retour précis après une prestation ou une livraison.",
-        "weekly_uses": 149,
         "minutes": 2,
         "accent": "#B18735",
         "fields": [
@@ -85,7 +82,6 @@ CURATED_TEMPLATES = [
         "name": "Être rappelé",
         "category": "Contact",
         "description": "Un formulaire très court pour transformer une visite en conversation.",
-        "weekly_uses": 118,
         "minutes": 1,
         "accent": "#456988",
         "fields": [
@@ -103,8 +99,15 @@ DEFAULT_THANK_YOU = {
     "message": "Votre réponse a bien été transmise. Notre équipe revient vers vous rapidement.",
     "action": "none",
     "button_label": "Retour au site",
-    "button_url": "https://example.com",
+    "button_url": "",
 }
+
+
+KIND_BY_CATEGORY = {"Contact": "contact", "Sondage": "survey", "Information": "information"}
+
+
+def template_kind(category: str) -> str:
+    return KIND_BY_CATEGORY.get(category, "contact")
 
 
 def curated_template(key: str) -> dict | None:
@@ -115,6 +118,7 @@ def curated_template(key: str) -> dict | None:
 def template_payload(template: dict) -> dict:
     result = deepcopy(template)
     result["thank_you"] = deepcopy(DEFAULT_THANK_YOU)
+    result["content"] = default_content(template_kind(result.get("category", "Contact")))
     result["field_count"] = len(result["fields"])
     return result
 

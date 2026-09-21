@@ -15,17 +15,21 @@ export type FormStyle = {
   glow: number;
   font: "sans" | "grotesk" | "serif" | "mono";
 };
+export type FormContent = { eyebrow: string; submit_label: string; trust_note: string };
 export type FormDesign = {
   layout: "card" | "split" | "minimal";
-  background: "warm" | "mist" | "white" | "ink";
   density: "compact" | "comfortable" | "airy";
-  radius: "subtle" | "rounded" | "pill";
   field_style: "outline" | "filled" | "underline";
   button_style: "solid" | "outline" | "soft";
   heading_align: "left" | "center";
   style?: FormStyle;
+  /** Anciens tokens, encore presents en base : convertis en style au rendu. */
+  background?: "warm" | "mist" | "white" | "ink";
+  radius?: "subtle" | "rounded" | "pill";
 };
-export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; thank_you: Record<string, string>; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+export type CampaignHealth = { score: number; checks: { label: string; ok: boolean; hint: string }[] };
+export type CampaignDraft = Partial<Pick<Campaign, "name" | "description" | "fields" | "design" | "content" | "thank_you">>;
+export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; draft: CampaignDraft | null; health: CampaignHealth; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
 export type LibraryTemplate = {
   id?: string;
   key: string;
@@ -35,8 +39,8 @@ export type LibraryTemplate = {
   fields: Field[];
   field_count: number;
   design: FormDesign;
+  content: FormContent;
   thank_you: Record<string, string>;
-  weekly_uses?: number;
   minutes?: number;
   accent?: string;
   uses?: number;
@@ -45,4 +49,26 @@ export type LibraryTemplate = {
 };
 export type LibraryData = { featured: LibraryTemplate[]; saved: LibraryTemplate[]; recent: Campaign[] };
 export type Stats = { campaigns: number; active: number; responses: number; week_responses: number; conversion: number; daily: { date: string; count: number }[]; sources: { name: string; count: number }[]; recent: { id: string; campaign: string; name: string; source: string; created_at: string }[] };
-export type Me = { id: string; email: string; full_name: string; role: string; company: { id: string; name: string; legal_name: string; sector: string; siret: string; address: string; primary_color: string; accent_color: string; tone: string; dpo_email: string } };
+export type BrandProfile = {
+  palette?: string[];
+  font?: FormStyle["font"];
+  tone?: string;
+  rules_do?: string[];
+  rules_avoid?: string[];
+  summary?: string;
+};
+export type Company = {
+  id: string;
+  name: string;
+  legal_name: string;
+  sector: string;
+  siret: string;
+  address: string;
+  primary_color: string;
+  accent_color: string;
+  tone: string;
+  dpo_email: string;
+  logo: string;
+  brand: BrandProfile;
+};
+export type Me = { id: string; email: string; full_name: string; role: string; company: Company };

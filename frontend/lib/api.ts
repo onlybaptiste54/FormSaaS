@@ -21,7 +21,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({ detail: "Une erreur est survenue" }));
-    throw new Error(data.detail || "Une erreur est survenue");
+    // FastAPI renvoie une liste d'erreurs quand la validation du corps echoue.
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map((item: { msg?: string }) => item.msg?.replace("Value error, ", "")).filter(Boolean).join(" · ")
+      : data.detail;
+    throw new Error(detail || "Une erreur est survenue");
   }
   if (response.status === 204) return undefined as T;
   return response.json();
