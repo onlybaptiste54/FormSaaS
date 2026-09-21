@@ -3,9 +3,9 @@
 import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import { Camera, Check, Image as ImageIcon, LoaderCircle, MousePointer2, Send, Sparkles, X } from "lucide-react";
 import { toPng } from "html-to-image";
+import { FormRenderer, FormStage } from "@/components/form-renderer";
 import { api } from "@/lib/api";
-import { backgroundClassName, designClassNames, formStyleVars, normalizeDesign } from "@/lib/form-design";
-import type { Campaign, Field, Me } from "@/lib/types";
+import type { Campaign, Me } from "@/lib/types";
 
 type Selection = {
   kind: "form" | "header" | "field" | "button";
@@ -74,30 +74,24 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, busy]);
 
-  const design = normalizeDesign(campaign.design);
-  const initials = (company?.name || "Sillage").split(" ").map(value => value[0]).join("").slice(0, 2).toUpperCase();
-  const editorStyle = {
-    ...formStyleVars(design),
+  const clientColors = {
     "--client": company?.primary_color || "#2F6B4F",
     "--client-accent": company?.accent_color || "#EE755C",
   } as React.CSSProperties;
 
-  async function captureTarget(event: MouseEvent<HTMLElement>, selection: Selection) {
+  async function captureTarget(event: MouseEvent<HTMLElement>) {
     if (!captureMode) return;
+    const element = (event.target as HTMLElement).closest<HTMLElement>("[data-luna-id]");
+    if (!element) return;
     event.preventDefault();
     event.stopPropagation();
+    const selection = selectionFor(element.dataset.lunaId || "card");
     setCaptureBusy(true);
     setCaptureMode(false);
     try {
-      const element = event.currentTarget;
-      let dataUrl = await toPng(element, {
-        cacheBust: true,
-        pixelRatio: 1,
-        backgroundColor: "#ffffff",
-        filter: node => !(node instanceof HTMLElement) || !node.classList.contains("capture-hint"),
-      });
+      let dataUrl = await toPng(element, { cacheBust: true, pixelRatio: 2 });
       if (dataUrl.length > 3_800_000) {
-        dataUrl = await toPng(element, { cacheBust: true, pixelRatio: 0.7, backgroundColor: "#ffffff" });
+        dataUrl = await toPng(element, { cacheBust: true, pixelRatio: 1 });
       }
       if (dataUrl.length > 3_800_000) throw new Error("Capture trop volumineuse");
       setPendingCapture({ ...selection, dataUrl });
@@ -144,13 +138,6 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
     }
   }
 
-  function selectableProps(selection: Selection) {
-    return {
-      "data-capture-name": selection.label,
-      onClick: (event: MouseEvent<HTMLElement>) => void captureTarget(event, selection),
-    };
-  }
-
   return <div className="detail-content luna-editor">
     <section className={`editor-preview-panel ${captureMode ? "capture-mode" : ""}`}>
       <div className="editor-toolbar">
@@ -163,32 +150,18 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
           {captureBusy ? "Capture…" : captureMode ? "Annuler" : "Capturer une zone"}
         </button>
       </div>
-      {captureMode && <div className="capture-guide"><MousePointer2 size={16}/>Survolez puis cliquez sur le titre, un champ, le bouton ou le formulaire entier.</div>}
-      <div className={`editor-canvas ${backgroundClassName(design)}`} style={editorStyle}>
-        <article className={`editor-form-card ${designClassNames(design)}`} {...selectableProps({ kind: "form", label: "Formulaire complet" })}>
-          <span className="capture-hint">Formulaire complet</span>
-          <div className="editor-form-brand"><span>{initials}</span><strong>{company?.name || "Votre entreprise"}</strong></div>
-          <header className="editor-form-header" {...selectableProps({ kind: "header", label: "En-tête du formulaire" })}>
-            <span className="capture-hint">En-tête</span>
-            <p className="eyebrow">PRENONS CONTACT</p>
-            <h2>{campaign.name}</h2>
-            <p>{campaign.description}</p>
-          </header>
-          <div className="editor-fields">
-            {campaign.fields.map(field => <EditorField key={field.id} field={field} selectableProps={selectableProps}/>)}
-          </div>
-          <button className="editor-submit" type="button" {...selectableProps({ kind: "button", label: "Bouton d’envoi" })}>
-            <span className="capture-hint">Bouton</span>Envoyer ma réponse <Send size={16}/>
-          </button>
-          <p className="editor-secure-note"><Check size={13}/>Données protégées et utilisées uniquement pour traiter la demande.</p>
-        </article>
-      </div>
+      {captureMode && <div className="capture-guide"><MousePointer2 size={16}/>Cliquez sur la zone à modifier : titre, champ, bouton ou formulaire entier.</div>}
+      <FormStage design={campaign.design} className="editor-canvas" style={clientColors}>
+        <div className="editor-form-frame" onClickCapture={event => void captureTarget(event)}>
+          <FormRenderer form={campaign} company={{ name: company?.name || "Votre entreprise" }} mode="edit"/>
+        </div>
+      </FormStage>
     </section>
 
     <aside className="luna-chat-panel">
       <header className="luna-chat-head">
         <div className="luna-chat-avatar"><Sparkles size={18}/></div>
-        <div><strong>Luna</strong><span>{status?.configured ? `${status.model} · connecté` : "Clé OpenAI requise"}</span></div>
+        <div><strong>Luna</strong><span>{status?.configured ? "Connectée" : "Indisponible"}</span></div>
         <i className={status?.configured ? "online" : ""}/>
       </header>
       <div className="luna-chat-messages" ref={messagesRef}>
@@ -210,16 +183,20 @@ export function LunaFormEditor({ campaign, onCampaignChange }: { campaign: Campa
           <span>{instruction.length}/800</span>
           <button className="chat-send" disabled={!instruction.trim() || !status?.configured || busy} aria-label="Envoyer à Luna"><Send size={17}/></button>
         </div>
-        {status && !status.configured && <p className="composer-help">Ajoutez <code>OPENAI_API_KEY</code> dans votre fichier <code>.env</code>, puis relancez Docker.</p>}
+        {status && !status.configured && <p className="composer-help">Luna n’est pas encore connectée. Un administrateur doit renseigner la clé du service d’IA.</p>}
       </form>
     </aside>
   </div>;
 }
 
-function EditorField({ field, selectableProps }: { field: Field; selectableProps: (selection: Selection) => Record<string, unknown> }) {
-  const props = selectableProps({ kind: "field", id: field.id, label: field.label });
-  if (field.type === "consent") return <div className="editor-field editor-consent" {...props}><span className="capture-hint">Champ</span><i/>{field.label}</div>;
-  if (field.type === "rating") return <div className="editor-field" {...props}><span className="capture-hint">Champ</span><label>{field.label}{field.required && " *"}</label><div className="editor-rating">{Array.from({ length: field.scale || 5 }, (_, index) => index + 1).map(value => <span key={value}>{value}</span>)}</div></div>;
-  if (field.type === "radio") return <div className="editor-field" {...props}><span className="capture-hint">Champ</span><label>{field.label}{field.required && " *"}</label><div className="editor-options">{field.options?.map(option => <span key={option}>{option}</span>)}</div></div>;
-  return <div className="editor-field" {...props}><span className="capture-hint">Champ</span><label>{field.label}{field.required && " *"}</label><div className={`editor-fake-input ${field.type === "textarea" ? "tall" : ""}`}><span>{field.placeholder}</span></div></div>;
+/** Traduit un data-luna-id du rendu en selection comprise par l'API. */
+function selectionFor(lunaId: string): Selection {
+  if (lunaId.startsWith("field:")) {
+    const [, rest] = lunaId.split(":");
+    const id = rest.replace(".label", "");
+    return { kind: "field", id, label: `Champ « ${id} »` };
+  }
+  if (lunaId === "submit") return { kind: "button", label: "Bouton d’envoi" };
+  if (["eyebrow", "title", "description", "brand"].includes(lunaId)) return { kind: "header", label: "En-tête du formulaire" };
+  return { kind: "form", label: "Formulaire complet" };
 }

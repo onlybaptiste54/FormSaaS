@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+from .luna import default_content
+
 
 CURATED_TEMPLATES = [
     {
@@ -101,6 +103,13 @@ DEFAULT_THANK_YOU = {
 }
 
 
+KIND_BY_CATEGORY = {"Contact": "contact", "Sondage": "survey", "Information": "information"}
+
+
+def template_kind(category: str) -> str:
+    return KIND_BY_CATEGORY.get(category, "contact")
+
+
 def curated_template(key: str) -> dict | None:
     item = next((template for template in CURATED_TEMPLATES if template["key"] == key), None)
     return deepcopy(item) if item else None
@@ -109,6 +118,7 @@ def curated_template(key: str) -> dict | None:
 def template_payload(template: dict) -> dict:
     result = deepcopy(template)
     result["thank_you"] = deepcopy(DEFAULT_THANK_YOU)
+    result["content"] = default_content(template_kind(result.get("category", "Contact")))
     result["field_count"] = len(result["fields"])
     return result
 

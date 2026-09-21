@@ -11,12 +11,12 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .luna import LunaAPIError, default_design, generate_campaign, revise_campaign, slugify
+from .luna import LunaAPIError, default_content, default_design, generate_campaign, revise_campaign, slugify
 from .models import Campaign, Company, FormResponse, Template, User
 from .schemas import CampaignCreate, CampaignUpdate, CompanyUpdate, LoginIn, LunaRefineRequest, SubmitResponse
 from .security import create_token, current_user, verify_password
 from .seed import seed
-from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_payload
+from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
 
 
 @asynccontextmanager
@@ -33,7 +33,7 @@ app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.co
 
 def campaign_json(c: Campaign):
     responses = len(c.responses)
-    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
+    return {"id": c.id, "name": c.name, "slug": c.slug, "description": c.description, "kind": c.kind, "status": c.status, "visibility": c.visibility, "fields": c.fields, "design": c.design or default_design(), "content": c.content or default_content(c.kind), "thank_you": c.thank_you, "visits": c.visits, "responses": responses, "conversion": round((responses / c.visits * 100) if c.visits else 0, 1), "archived": c.archived, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat()}
 
 
 def saved_template_json(template: Template):
@@ -46,6 +46,7 @@ def saved_template_json(template: Template):
         "fields": template.fields,
         "field_count": len(template.fields),
         "design": template.design or default_design(),
+        "content": default_content(template_kind(template.category)),
         "thank_you": template.thank_you,
         "uses": template.uses,
         "created_at": template.created_at.isoformat(),
@@ -54,8 +55,7 @@ def saved_template_json(template: Template):
 
 
 def campaign_from_template(template: dict, user: User) -> Campaign:
-    category = template.get("category", "Contact")
-    kind = {"Contact": "contact", "Sondage": "survey", "Information": "information"}.get(category, "contact")
+    kind = template_kind(template.get("category", "Contact"))
     return Campaign(
         company_id=user.company_id,
         creator_id=user.id,
@@ -67,6 +67,7 @@ def campaign_from_template(template: dict, user: User) -> Campaign:
         visibility="private",
         fields=campaign_fields(template["fields"], user.company.name),
         design=template.get("design") or default_design(),
+        content=default_content(kind),
         thank_you=template.get("thank_you") or template_payload(template)["thank_you"],
     )
 
@@ -262,6 +263,7 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
                 "kind": campaign.kind,
                 "fields": campaign.fields,
                 "design": campaign.design or default_design(),
+                "content": campaign.content or default_content(campaign.kind),
                 "thank_you": campaign.thank_you,
             },
             data.instruction,
@@ -279,7 +281,7 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
 
-    for key in ("name", "description", "kind", "fields", "design", "thank_you"):
+    for key in ("name", "description", "kind", "fields", "design", "content", "thank_you"):
         setattr(campaign, key, revision[key])
     db.commit()
     db.refresh(campaign)
@@ -289,7 +291,7 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
 @app.post("/api/campaigns/{campaign_id}/duplicate", status_code=201)
 def duplicate_campaign(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = owned_campaign(campaign_id, db, user)
-    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=slugify(source.name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), thank_you=source.thank_you, visibility="private")
+    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=slugify(source.name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=source.thank_you, visibility="private")
     db.add(copy)
     db.commit()
     db.refresh(copy)
@@ -331,7 +333,7 @@ def public_campaign(slug: str, db: Session = Depends(get_db)):
     if not campaign:
         raise HTTPException(404, "Formulaire introuvable")
     c = campaign.company
-    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "thank_you": campaign.thank_you, "status": campaign.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
+    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "content": campaign.content or default_content(campaign.kind), "thank_you": campaign.thank_you, "status": campaign.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
 
 
 @app.post("/api/public/{slug}/visit", status_code=204)

@@ -6,9 +6,9 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronDown, Clock3, FileText, LayoutTemplate, LoaderCircle, Plus, Search, Send, Sparkles, Star, TrendingUp, X } from "lucide-react";
 import { PageHeader } from "@/components/shell";
 import { Loading } from "@/components/ui";
+import { FormRenderer, FormStage } from "@/components/form-renderer";
 import { api } from "@/lib/api";
-import { backgroundClassName, designClassNames, formStyleVars } from "@/lib/form-design";
-import type { Campaign, Field, LibraryData, LibraryTemplate } from "@/lib/types";
+import type { Campaign, LibraryData, LibraryTemplate } from "@/lib/types";
 
 const categories = ["Tous", "Contact", "Sondage", "Information"];
 
@@ -119,53 +119,47 @@ export default function LibraryPage() {
 }
 
 function TemplateCard({ template, rank, onOpen }: { template: LibraryTemplate; rank: number; onOpen: (template: LibraryTemplate) => void }) {
-  return <button className="template-showcase-card" onClick={() => onOpen(template)}>
+  // Div plutot que button : l'apercu contient lui-meme des boutons (notes, choix).
+  return <div className="template-showcase-card" role="button" tabIndex={0} onClick={() => onOpen(template)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(template); } }}>
     <div className="template-rank">0{rank}</div>
     <TemplateMiniature template={template}/>
     <div className="template-card-copy"><div><span>{template.category}</span><small><Star size={12}/>Sélection Sillage</small></div><h3>{template.name}</h3><p>{template.description}</p><footer><span>{template.field_count} champs · {template.minutes} min</span><i><ArrowRight size={16}/></i></footer></div>
-  </button>;
+  </div>;
 }
 
 function SavedTemplateCard({ template, onOpen, onUse, busy }: { template: LibraryTemplate; onOpen: (template: LibraryTemplate) => void; onUse: (template: LibraryTemplate) => void; busy: boolean }) {
   return <article className="saved-template-card panel">
-    <button className="saved-template-preview" onClick={() => onOpen(template)}><TemplateMiniature template={template}/></button>
+    <div className="saved-template-preview" role="button" tabIndex={0} onClick={() => onOpen(template)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(template); } }}><TemplateMiniature template={template}/></div>
     <div className="saved-template-copy"><span>{template.category}</span><h3>{template.name}</h3><p>{template.field_count} champs · utilisé {template.uses || 0} fois</p><div><button className="button button-secondary" onClick={() => onOpen(template)}>Aperçu</button><button className="button button-primary" onClick={() => void onUse(template)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>}Utiliser</button></div></div>
   </article>;
 }
 
 function RecentCampaign({ campaign }: { campaign: Campaign }) {
   return <Link href={`/campaigns/${campaign.id}?tab=form`} className="recent-template-row">
-    <div className={`recent-template-visual ${backgroundClassName(campaign.design)}`} style={formStyleVars(campaign.design)}><div className={designClassNames(campaign.design)}><span/><span/><span/></div></div>
+    <FormStage design={campaign.design} className="recent-template-visual"><span/><span/><span/></FormStage>
     <div><span>{categoryLabel(campaign.kind)}</span><strong>{campaign.name}</strong><small>Modifié {relativeDate(campaign.updated_at)}</small></div>
     <div className="recent-template-stats"><strong>{campaign.responses}</strong><span>réponses</span></div>
     <ArrowRight size={18}/>
   </Link>;
 }
 
+/** Vignette : le rendu reel, simplement mis a l'echelle. */
 function TemplateMiniature({ template }: { template: LibraryTemplate }) {
-  const style = { ...formStyleVars(template.design), "--template-accent": template.accent || "#2F6B4F" } as React.CSSProperties;
-  return <div className={`template-miniature ${backgroundClassName(template.design)}`} style={style}>
-    <div className={`template-mini-card ${designClassNames(template.design)}`}>
-      <div className="mini-brand"><i/><span>{template.category}</span></div><strong>{template.name}</strong><p>{template.description}</p>
-      <div className="mini-fields">{template.fields.slice(0, 3).map(field => <span className={field.type === "textarea" ? "tall" : ""} key={field.id}><i/></span>)}</div>
-      <span className="mini-submit">Continuer</span>
+  return <FormStage design={template.design} className="template-miniature">
+    <div className="template-miniature-scale">
+      <FormRenderer form={template} company={{ name: "Votre entreprise" }} mode="thumb"/>
     </div>
-  </div>;
+  </FormStage>;
 }
 
 function TemplateModal({ template, saved, busyAction, onClose, onSave, onUse }: { template: LibraryTemplate; saved: boolean; busyAction: string; onClose: () => void; onSave: (template: LibraryTemplate) => void; onUse: (template: LibraryTemplate) => void }) {
-  const style = { ...formStyleVars(template.design), "--client": template.accent || "#2F6B4F" } as React.CSSProperties;
+  const style = { "--client": template.accent || "#2F6B4F" } as React.CSSProperties;
   return <div className="template-modal-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose(); }}>
     <div className="template-modal" role="dialog" aria-modal="true" aria-label={`Aperçu de ${template.name}`}>
       <button className="template-modal-close" onClick={onClose} aria-label="Fermer"><X/></button>
-      <div className={`template-modal-preview ${backgroundClassName(template.design)}`} style={style}>
-        <div className={`template-full-form ${designClassNames(template.design)}`}>
-          <div className="template-preview-brand"><i/><span>Votre entreprise</span></div>
-          <header><p className="eyebrow">{template.category}</p><h2>{template.name}</h2><p>{template.description}</p></header>
-          <div className="template-preview-fields">{template.fields.map(field => <TemplatePreviewField field={field} key={field.id}/>)}</div>
-          <button>Envoyer ma réponse <Send size={15}/></button>
-        </div>
-      </div>
+      <FormStage design={template.design} className="template-modal-preview" style={style}>
+        <FormRenderer form={template} company={{ name: "Votre entreprise" }} mode="thumb"/>
+      </FormStage>
       <aside className="template-modal-copy">
         <span className="section-kicker">{saved ? <Bookmark size={14}/> : <TrendingUp size={14}/>}{saved ? "Votre modèle" : "Modèle Sillage"}</span>
         <h2>{template.name}</h2><p>{template.description}</p>
@@ -178,12 +172,6 @@ function TemplateModal({ template, saved, busyAction, onClose, onSave, onUse }: 
       </aside>
     </div>
   </div>;
-}
-
-function TemplatePreviewField({ field }: { field: Field }) {
-  if (field.type === "rating") return <div className="template-preview-field"><label>{field.label}</label><div className="template-preview-rating">{[1,2,3,4,5].map(value => <span key={value}>{value}</span>)}</div></div>;
-  if (field.type === "radio") return <div className="template-preview-field"><label>{field.label}</label><div className="template-preview-options">{field.options?.map(option => <span key={option}>{option}</span>)}</div></div>;
-  return <div className="template-preview-field"><label>{field.label}{field.required && " *"}</label><div className={field.type === "textarea" ? "tall" : ""}>{field.placeholder}</div>{field.type === "select" && <ChevronDown size={15}/>}</div>;
 }
 
 function NoResult() { return <div className="library-no-result"><Search/><p>Aucun modèle ne correspond à cette recherche.</p></div>; }

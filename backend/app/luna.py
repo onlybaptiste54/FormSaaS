@@ -62,13 +62,21 @@ class LunaDesign(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     layout: Literal["card", "split", "minimal"]
-    background: Literal["warm", "mist", "white", "ink"]
     density: Literal["compact", "comfortable", "airy"]
-    radius: Literal["subtle", "rounded", "pill"]
     field_style: Literal["outline", "filled", "underline"]
     button_style: Literal["solid", "outline", "soft"]
     heading_align: Literal["left", "center"]
     style: LunaStyle
+
+
+class LunaContent(BaseModel):
+    """Textes de l'ossature du formulaire, autrefois codés en dur dans le rendu."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    eyebrow: str = Field(min_length=2, max_length=40)
+    submit_label: str = Field(min_length=2, max_length=40)
+    trust_note: str = Field(min_length=10, max_length=180)
 
 
 class LunaCampaign(BaseModel):
@@ -79,6 +87,7 @@ class LunaCampaign(BaseModel):
     kind: Literal["contact", "survey", "information"]
     fields: list[LunaField] = Field(min_length=1, max_length=5)
     design: LunaDesign
+    content: LunaContent
     thank_you_title: str = Field(min_length=3, max_length=100)
     thank_you_message: str = Field(min_length=10, max_length=260)
 
@@ -99,20 +108,21 @@ Contraintes impératives :
 - scale vaut un entier de 3 à 10 uniquement pour rating, sinon null.
 - placeholder est une aide courte ou null. Aucun dark pattern, aucune donnée sensible inutile.
 - Le ton et les textes doivent correspondre à l'identité de l'entreprise.
-- Choisis tous les tokens de design ET toutes les valeurs de style demandés.
+- Choisis la structure (layout, density, field_style, button_style, heading_align) ET toutes les valeurs de style : les couleurs et les arrondis viennent uniquement de style.
 - Le style est libre : sobre, chaleureux, sombre, futuriste ou verre dépoli selon le brief et l'identité. Ose une direction affirmée quand la demande le suggère, ne retombe pas systématiquement sur du neutre.
 - Pour un rendu verre / glassmorphism : dégradé de page sombre, surface_alpha entre 0.08 et 0.25, blur_px entre 16 et 32, border_alpha autour de 0.3, glow élevé.
 - Pour un rendu clair et sobre : surface_alpha proche de 1, blur_px à 0, glow bas.
 - Contrainte non négociable : le contraste doit rester lisible. ink doit trancher franchement sur surface, et accent_ink sur accent.
 - N'utilise jamais de CSS, HTML, URL d'image ou valeur libre pour le design.
 - Le titre de remerciement peut contenir {prenom} si un champ de nom est présent.
+- content.eyebrow est un sur-titre court en majuscules, submit_label le texte du bouton d'envoi, trust_note une phrase rassurante sur l'usage des données.
 """
 
 LUNA_REVISION_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de formulaires français.
 Tu reçois le formulaire actuel, une zone sélectionnée, une demande de modification et parfois une capture PNG de cette zone.
 
 Contraintes impératives :
-- Retourne toujours le formulaire COMPLET, tous les tokens de design et toutes les valeurs de style, même si une seule zone change.
+- Retourne toujours le formulaire COMPLET : textes, champs, content (sur-titre, bouton, note de confiance), tous les tokens de design et toutes les valeurs de style, même si une seule zone change.
 - Le style est libre dans les bornes du schéma : couleurs, flou, rayons, glow et police. Applique franchement la direction demandée (futuriste, verre dépoli, sombre, minimal) plutôt qu'un ajustement timide.
 - Garde toujours un contraste lisible entre ink et surface, et entre accent_ink et accent.
 - Modifie en priorité la zone sélectionnée et préserve tout ce que l'utilisateur n'a pas demandé de changer.
@@ -125,12 +135,21 @@ Contraintes impératives :
 """
 
 
+EYEBROWS = {"contact": "PRENONS CONTACT", "survey": "VOTRE AVIS COMPTE", "information": "INSCRIPTION"}
+
+
+def default_content(kind: str = "contact") -> dict:
+    return {
+        "eyebrow": EYEBROWS.get(kind, EYEBROWS["contact"]),
+        "submit_label": "Envoyer ma réponse",
+        "trust_note": "Vos données sont protégées et utilisées uniquement pour traiter votre demande.",
+    }
+
+
 def default_design() -> dict:
     return {
         "layout": "card",
-        "background": "warm",
         "density": "comfortable",
-        "radius": "rounded",
         "field_style": "outline",
         "button_style": "solid",
         "heading_align": "left",
@@ -197,6 +216,7 @@ def _generate_campaign_local(prompt: str, company_name: str) -> dict:
         "kind": kind,
         "fields": fields,
         "design": default_design(),
+        "content": default_content(kind),
         "thank_you": {"title": "Merci {prenom} !", "message": "Votre réponse a bien été transmise. Notre équipe revient vers vous rapidement.", "action": "none", "button_label": "Retour au site", "button_url": ""},
     }
 
@@ -255,6 +275,7 @@ def _normalize_ai_campaign(result: LunaCampaign, company_name: str) -> dict:
         "kind": result.kind,
         "fields": fields,
         "design": result.design.model_dump(),
+        "content": result.content.model_dump(),
         "thank_you": {
             "title": result.thank_you_title,
             "message": result.thank_you_message,
@@ -374,6 +395,7 @@ def revise_campaign(
         "kind": current_campaign.get("kind"),
         "fields": business_fields,
         "design": current_campaign.get("design") or default_design(),
+        "content": current_campaign.get("content") or default_content(current_campaign.get("kind", "contact")),
         "thank_you": current_campaign.get("thank_you"),
     }
     user_context = {

@@ -15,17 +15,19 @@ export type FormStyle = {
   glow: number;
   font: "sans" | "grotesk" | "serif" | "mono";
 };
+export type FormContent = { eyebrow: string; submit_label: string; trust_note: string };
 export type FormDesign = {
   layout: "card" | "split" | "minimal";
-  background: "warm" | "mist" | "white" | "ink";
   density: "compact" | "comfortable" | "airy";
-  radius: "subtle" | "rounded" | "pill";
   field_style: "outline" | "filled" | "underline";
   button_style: "solid" | "outline" | "soft";
   heading_align: "left" | "center";
   style?: FormStyle;
+  /** Anciens tokens, encore presents en base : convertis en style au rendu. */
+  background?: "warm" | "mist" | "white" | "ink";
+  radius?: "subtle" | "rounded" | "pill";
 };
-export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; thank_you: Record<string, string>; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+export type Campaign = { id: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
 export type LibraryTemplate = {
   id?: string;
   key: string;
@@ -35,6 +37,7 @@ export type LibraryTemplate = {
   fields: Field[];
   field_count: number;
   design: FormDesign;
+  content: FormContent;
   thank_you: Record<string, string>;
   minutes?: number;
   accent?: string;

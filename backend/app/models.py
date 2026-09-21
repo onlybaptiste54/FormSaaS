@@ -63,6 +63,7 @@ class Campaign(Base):
     visibility: Mapped[str] = mapped_column(String(30), default="private")
     fields: Mapped[list] = mapped_column(JSON, default=list)
     design: Mapped[dict] = mapped_column(JSON, default=dict)
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
     thank_you: Mapped[dict] = mapped_column(JSON, default=dict)
     visits: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)

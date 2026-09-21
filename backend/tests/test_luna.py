@@ -7,12 +7,16 @@ from app.luna import generate_campaign, revise_campaign
 
 DESIGN = {
     "layout": "card",
-    "background": "warm",
     "density": "comfortable",
-    "radius": "rounded",
     "field_style": "outline",
     "button_style": "solid",
     "heading_align": "left",
+}
+
+CONTENT = {
+    "eyebrow": "PRENONS CONTACT",
+    "submit_label": "Envoyer ma réponse",
+    "trust_note": "Vos données sont protégées et utilisées uniquement pour traiter votre demande.",
 }
 
 STYLE = {
@@ -42,6 +46,7 @@ def test_survey_generation_stays_short_and_rgpd_ready():
     assert campaign["fields"][-1]["type"] == "consent"
     assert campaign["fields"][-1]["required"] is True
     assert campaign["design"] == DESIGN
+    assert campaign["content"]["eyebrow"] == "VOTRE AVIS COMPTE"
 
 
 def test_contact_generation_understands_urgency():
@@ -74,6 +79,7 @@ def test_openai_generation_uses_structured_output_and_safe_identity():
                 {"id": "urgence", "label": "Est-ce urgent ?", "type": "radio", "required": True, "options": ["Oui", "Non"], "scale": None, "placeholder": None},
             ],
             "design": AI_DESIGN,
+            "content": CONTENT,
             "thank_you_title": "Merci {prenom} !",
             "thank_you_message": "Votre demande a bien été transmise à notre équipe.",
         }
@@ -121,7 +127,8 @@ def test_visual_revision_sends_selected_capture_and_returns_safe_tokens():
             "fields": [
                 {"id": "email", "label": "Votre meilleur email", "type": "email", "required": True, "options": [], "scale": None, "placeholder": "vous@entreprise.fr"},
             ],
-            "design": {**AI_DESIGN, "field_style": "filled", "radius": "pill"},
+            "design": {**AI_DESIGN, "field_style": "filled"},
+            "content": {**CONTENT, "submit_label": "Être rappelé"},
             "thank_you_title": "Merci !",
             "thank_you_message": "Votre demande a bien été envoyée à notre équipe.",
             "assistant_message": "J’ai adouci le champ email et clarifié son libellé.",
@@ -149,6 +156,6 @@ def test_visual_revision_sends_selected_capture_and_returns_safe_tokens():
     )
 
     assert revision["design"]["field_style"] == "filled"
-    assert revision["design"]["radius"] == "pill"
+    assert revision["content"]["submit_label"] == "Être rappelé"
     assert revision["fields"][-1]["type"] == "consent"
     assert revision["assistant_message"].startswith("J’ai adouci")
