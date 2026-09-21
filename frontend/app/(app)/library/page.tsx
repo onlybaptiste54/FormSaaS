@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronDown, Clock3, FileText, LayoutTemplate, LoaderCircle, Plus, Search, Send, Sparkles, Star, TrendingUp, X } from "lucide-react";
-import { PageHeader, Shell } from "@/components/shell";
+import { PageHeader } from "@/components/shell";
 import { Loading } from "@/components/ui";
 import { api } from "@/lib/api";
 import { backgroundClassName, designClassNames, formStyleVars } from "@/lib/form-design";
@@ -19,7 +19,7 @@ export default function LibraryPage() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Tous");
   const [selected, setSelected] = useState<LibraryTemplate | null>(null);
-  const [busyAction, setBusyAction] = useState("");
+  const [busyAction, setBusyAction] = useState<{ key: string; action: string } | null>(null);
   const [notice, setNotice] = useState("");
 
   useEffect(() => { void api<LibraryData>("/library").then(setData); }, []);
@@ -49,7 +49,7 @@ export default function LibraryPage() {
   }
 
   async function saveTemplate(template: LibraryTemplate) {
-    setBusyAction("save");
+    setBusyAction({ key: template.key, action: "save" });
     try {
       const item = await api<LibraryTemplate>(`/library/featured/${template.key}/save`, { method: "POST" });
       setData(current => current ? { ...current, saved: [item, ...current.saved.filter(savedItem => savedItem.id !== item.id)] } : current);
@@ -60,12 +60,12 @@ export default function LibraryPage() {
       setNotice(error instanceof Error ? error.message : "Ajout impossible");
       setTimeout(() => setNotice(""), 2600);
     } finally {
-      setBusyAction("");
+      setBusyAction(null);
     }
   }
 
   async function useTemplate(template: LibraryTemplate) {
-    setBusyAction("use");
+    setBusyAction({ key: template.id || template.key, action: "use" });
     try {
       const path = template.id ? `/library/templates/${template.id}/use` : `/library/featured/${template.key}/use`;
       const campaign = await api<Campaign>(path, { method: "POST" });
@@ -74,11 +74,11 @@ export default function LibraryPage() {
       setNotice(error instanceof Error ? error.message : "Création impossible");
       setTimeout(() => setNotice(""), 2600);
     } finally {
-      setBusyAction("");
+      setBusyAction(null);
     }
   }
 
-  return <Shell><div className="page-wrap library-page">
+  return <div className="page-wrap library-page">
     <PageHeader eyebrow="INSPIRATION & MODÈLES" title="Bibliothèque" description="Trouvez une base solide, prévisualisez-la, puis adaptez-la à votre marque avec Luna." actions={<Link href="/campaigns/new" className="button button-primary"><Sparkles size={17}/>Créer avec Luna</Link>}/>
 
     <div className="library-commandbar">
@@ -89,7 +89,7 @@ export default function LibraryPage() {
     {!data ? <Loading/> : <>
       <section className="library-section library-featured" id="popular">
         <div className="library-section-head">
-          <div><span className="section-kicker"><TrendingUp size={14}/>Tendances</span><h2>Populaires cette semaine</h2><p>Les formats les plus utilisés par les équipes en ce moment.</p></div>
+          <div><span className="section-kicker"><TrendingUp size={14}/>Sélection</span><h2>Modèles Sillage</h2><p>Des bases prêtes à l’emploi pour les besoins les plus courants.</p></div>
           <div className="carousel-controls"><button onClick={() => scrollCarousel(-1)} aria-label="Précédent"><ArrowLeft/></button><button onClick={() => scrollCarousel(1)} aria-label="Suivant"><ArrowRight/></button></div>
         </div>
         {featured.length ? <div className="template-carousel" ref={carouselRef}>{featured.map((template, index) => <TemplateCard template={template} rank={index + 1} onOpen={setSelected} key={template.key}/>)}</div> : <NoResult/>}
@@ -99,7 +99,7 @@ export default function LibraryPage() {
         <div className="library-section-head">
           <div><span className="section-kicker"><Bookmark size={14}/>Votre espace</span><h2>Mes modèles <small>{saved.length}</small></h2><p>Vos bases enregistrées, prêtes à être réutilisées sans toucher à l’original.</p></div>
         </div>
-        {saved.length ? <div className="saved-template-grid">{saved.map(template => <SavedTemplateCard template={template} onOpen={setSelected} onUse={useTemplate} busy={busyAction === "use"} key={template.id}/>)}</div> : <div className="library-empty">
+        {saved.length ? <div className="saved-template-grid">{saved.map(template => <SavedTemplateCard template={template} onOpen={setSelected} onUse={useTemplate} busy={busyAction?.key === template.id && busyAction?.action === "use"} key={template.id}/>)}</div> : <div className="library-empty">
           <div><LayoutTemplate/></div><h3>Votre collection commence ici</h3><p>Ajoutez un modèle populaire pour le retrouver et le réutiliser à tout moment.</p><button className="text-link" onClick={() => document.getElementById("popular")?.scrollIntoView({ behavior: "smooth" })}>Explorer les modèles <ArrowRight size={15}/></button>
         </div>}
       </section>
@@ -113,16 +113,16 @@ export default function LibraryPage() {
       </section>
     </>}
 
-    {selected && <TemplateModal template={selected} saved={Boolean(selected.id)} busyAction={busyAction} onClose={() => setSelected(null)} onSave={saveTemplate} onUse={useTemplate}/>}
+    {selected && <TemplateModal template={selected} saved={Boolean(selected.id)} busyAction={busyAction?.action || ""} onClose={() => setSelected(null)} onSave={saveTemplate} onUse={useTemplate}/>}
     {notice && <div className="library-toast"><Check size={16}/>{notice}</div>}
-  </div></Shell>;
+  </div>;
 }
 
 function TemplateCard({ template, rank, onOpen }: { template: LibraryTemplate; rank: number; onOpen: (template: LibraryTemplate) => void }) {
   return <button className="template-showcase-card" onClick={() => onOpen(template)}>
     <div className="template-rank">0{rank}</div>
     <TemplateMiniature template={template}/>
-    <div className="template-card-copy"><div><span>{template.category}</span><small><Star size={12}/>{template.weekly_uses} utilisations</small></div><h3>{template.name}</h3><p>{template.description}</p><footer><span>{template.field_count} champs · {template.minutes} min</span><i><ArrowRight size={16}/></i></footer></div>
+    <div className="template-card-copy"><div><span>{template.category}</span><small><Star size={12}/>Sélection Sillage</small></div><h3>{template.name}</h3><p>{template.description}</p><footer><span>{template.field_count} champs · {template.minutes} min</span><i><ArrowRight size={16}/></i></footer></div>
   </button>;
 }
 
@@ -167,7 +167,7 @@ function TemplateModal({ template, saved, busyAction, onClose, onSave, onUse }: 
         </div>
       </div>
       <aside className="template-modal-copy">
-        <span className="section-kicker">{saved ? <Bookmark size={14}/> : <TrendingUp size={14}/>}{saved ? "Votre modèle" : "Modèle populaire"}</span>
+        <span className="section-kicker">{saved ? <Bookmark size={14}/> : <TrendingUp size={14}/>}{saved ? "Votre modèle" : "Modèle Sillage"}</span>
         <h2>{template.name}</h2><p>{template.description}</p>
         <div className="template-modal-meta"><span><FileText/> {template.field_count} champs</span>{template.minutes && <span><Clock3/> {template.minutes} min</span>}<span><Sparkles/> Personnalisable avec Luna</span></div>
         <div className="template-modal-actions">

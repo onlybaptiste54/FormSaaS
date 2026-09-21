@@ -46,3 +46,7 @@ logs/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Outils locaux
+.claude/
+tsconfig.tsbuildinfo

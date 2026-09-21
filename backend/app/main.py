@@ -136,6 +136,12 @@ def stats(db: Session = Depends(get_db), user: User = Depends(current_user)):
     return {"campaigns": len(campaigns), "active": sum(c.status == "active" for c in campaigns), "responses": total or 0, "week_responses": week or 0, "conversion": round((total / visits * 100) if visits else 0, 1), "daily": daily, "sources": [{"name": name, "count": count} for name, count in sources], "recent": [{"id": r.id, "campaign": r.campaign.name, "name": r.answers.get("name", "Réponse anonyme"), "source": r.source, "created_at": r.created_at.isoformat()} for r in recent]}
 
 
+@app.get("/api/team")
+def team(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    members = db.scalars(select(User).where(User.company_id == user.company_id).order_by(User.created_at)).all()
+    return [{"id": m.id, "full_name": m.full_name, "email": m.email, "role": m.role} for m in members]
+
+
 @app.get("/api/campaigns")
 def list_campaigns(archived: bool = False, db: Session = Depends(get_db), user: User = Depends(current_user)):
     query = select(Campaign).where(Campaign.company_id == user.company_id, Campaign.archived == archived).order_by(desc(Campaign.updated_at))
@@ -283,8 +289,7 @@ def refine_with_luna(campaign_id: str, data: LunaRefineRequest, db: Session = De
 @app.post("/api/campaigns/{campaign_id}/duplicate", status_code=201)
 def duplicate_campaign(campaign_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = owned_campaign(campaign_id, db, user)
-    generated = generate_campaign(source.description or source.name, user.company.name)
-    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=generated["slug"], description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), thank_you=source.thank_you, visibility="private")
+    copy = Campaign(company_id=user.company_id, creator_id=user.id, name=f"{source.name} - copie", slug=slugify(source.name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), thank_you=source.thank_you, visibility="private")
     db.add(copy)
     db.commit()
     db.refresh(copy)
@@ -325,10 +330,17 @@ def public_campaign(slug: str, db: Session = Depends(get_db)):
     campaign = db.scalar(select(Campaign).where(Campaign.slug == slug, Campaign.archived.is_(False)))
     if not campaign:
         raise HTTPException(404, "Formulaire introuvable")
-    campaign.visits += 1
-    db.commit()
     c = campaign.company
-    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "thank_you": campaign.thank_you, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
+    return {"name": campaign.name, "description": campaign.description, "fields": campaign.fields, "design": campaign.design or default_design(), "thank_you": campaign.thank_you, "status": campaign.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email}}
+
+
+@app.post("/api/public/{slug}/visit", status_code=204)
+def track_visit(slug: str, db: Session = Depends(get_db)):
+    """Une visite par session, comptée par le navigateur : un GET ne doit rien écrire."""
+    campaign = db.scalar(select(Campaign).where(Campaign.slug == slug, Campaign.status == "active", Campaign.archived.is_(False)))
+    if campaign:
+        campaign.visits += 1
+        db.commit()
 
 
 @app.post("/api/public/{slug}/submit", status_code=201)

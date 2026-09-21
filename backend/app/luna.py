@@ -197,7 +197,7 @@ def _generate_campaign_local(prompt: str, company_name: str) -> dict:
         "kind": kind,
         "fields": fields,
         "design": default_design(),
-        "thank_you": {"title": "Merci {prenom} !", "message": "Votre réponse a bien été transmise. Notre équipe revient vers vous rapidement.", "action": "none", "button_label": "Retour au site", "button_url": "https://example.com"},
+        "thank_you": {"title": "Merci {prenom} !", "message": "Votre réponse a bien été transmise. Notre équipe revient vers vous rapidement.", "action": "none", "button_label": "Retour au site", "button_url": ""},
     }
 
 
@@ -260,7 +260,7 @@ def _normalize_ai_campaign(result: LunaCampaign, company_name: str) -> dict:
             "message": result.thank_you_message,
             "action": "none",
             "button_label": "Retour au site",
-            "button_url": "https://example.com",
+            "button_url": "",
         },
     }
 

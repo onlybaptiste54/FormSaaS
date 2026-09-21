@@ -36,7 +36,6 @@ export type LibraryTemplate = {
   field_count: number;
   design: FormDesign;
   thank_you: Record<string, string>;
-  weekly_uses?: number;
   minutes?: number;
   accent?: string;
   uses?: number;
