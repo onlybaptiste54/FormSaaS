@@ -72,7 +72,9 @@ export function styleFromLegacy(design?: Partial<FormDesign>): FormStyle {
 }
 
 export function normalizeDesign(design?: Partial<FormDesign>): FormDesign {
-  return { ...DEFAULT_FORM_DESIGN, ...design, style: design?.style || styleFromLegacy(design) };
+  // Luna n'ecrit que les cles qu'elle change : un style enregistre peut etre
+  // partiel. On le complete toujours, sinon une couleur absente casse le rendu.
+  return { ...DEFAULT_FORM_DESIGN, ...design, style: { ...styleFromLegacy(design), ...design?.style } };
 }
 
 export function designClassNames(design?: Partial<FormDesign>) {

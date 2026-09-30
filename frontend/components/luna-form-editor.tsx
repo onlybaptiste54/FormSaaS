@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, ImagePlus, LoaderCircle, Monitor, MousePointer2, Send, Smartphone, Sparkles, Undo2, X } from "lucide-react";
 import { FormRenderer, FormStage } from "@/components/form-renderer";
 import { useMe, useRefreshMe } from "@/components/shell";
@@ -88,6 +88,7 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [dragRect, setDragRect] = useState<Rect | null>(null);
+  const [bubblePosition, setBubblePosition] = useState<{ left: number; top: number } | null>(null);
   const [instruction, setInstruction] = useState("");
   const [pending, setPending] = useState<{ text: string; images: string[] } | null>(null);
   const [zoneInstruction, setZoneInstruction] = useState("");
@@ -95,12 +96,16 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
   const [error, setError] = useState("");
   const [touched, setTouched] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<string[]>([]);
+  // L'historique ne retient que le texte des instructions : on garde ici les
+  // images envoyees pour qu'elles ne disparaissent pas de la conversation.
+  const [sentImages, setSentImages] = useState<Record<string, string[]>>({});
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   // Le rectangle vit aussi dans une ref : mousemove et mouseup peuvent tomber
   // dans le meme lot de rendu, et l'etat serait alors en retard.
   const dragRectRef = useRef<Rect | null>(null);
   const bubbleRef = useRef<HTMLTextAreaElement>(null);
+  const bubbleBoxRef = useRef<HTMLFormElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const refreshMe = useRefreshMe();
@@ -134,6 +139,23 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
     const timer = setTimeout(() => setTouched([]), 1600);
     return () => clearTimeout(timer);
   }, [touched]);
+
+  // L'apercu masque ce qui deborde : la bulle doit rester dedans, quitte a
+  // passer au-dessus du cadre quand il n'y a plus la place en dessous.
+  useLayoutEffect(() => {
+    const bubble = bubbleBoxRef.current;
+    const canvas = canvasRef.current;
+    if (!selection || !bubble || !canvas) return;
+    const { width, height } = bubble.getBoundingClientRect();
+    const { rect } = selection;
+    const below = rect.y + rect.height + 10;
+    const above = rect.y - height - 10;
+    const fits = below + height <= canvas.clientHeight;
+    setBubblePosition({
+      left: Math.max(0, Math.min(rect.x, canvas.clientWidth - width)),
+      top: Math.max(0, fits ? below : above >= 0 ? above : canvas.clientHeight - height),
+    });
+  }, [selection, attachments.length]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { setSelection(null); setDragRect(null); } };
@@ -175,6 +197,7 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
     if (!rect || rect.width < 12 || rect.height < 12) return; // un simple clic n'est pas une selection
 
     const kept = elementsInside(canvasRef.current!, rect);
+    setBubblePosition(null);
     setSelection({ rect, ids: kept, label: selectionLabel(kept, draft.fields), capturing: true });
     setTimeout(() => bubbleRef.current?.focus(), 30);
     try {
@@ -201,7 +224,7 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
     setAttachments([]);
     setSelection(null);
     try {
-      const result = await api<{ message: string; form: Form; touched: string[] }>(`/forms/${form.id}/luna/refine`, {
+      const result = await api<{ message: string; form: Form; touched: string[]; version: { id: string } }>(`/forms/${form.id}/luna/refine`, {
         method: "POST",
         body: JSON.stringify({
           instruction: text,
@@ -214,6 +237,8 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
       });
       onFormChange(result.form);
       setTouched(result.touched);
+      const sent = [...(current?.dataUrl ? [current.dataUrl] : []), ...joined];
+      if (sent.length) setSentImages(images => ({ ...images, [result.version.id]: sent }));
       loadVersions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Luna n’a pas pu appliquer la modification.");
@@ -371,8 +396,8 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
             {dragRect && <div className="selection-rect" style={{ left: dragRect.x, top: dragRect.y, width: dragRect.width, height: dragRect.height }}/>}
             {selection && <>
               <div className="selection-rect kept" style={{ left: selection.rect.x, top: selection.rect.y, width: selection.rect.width, height: selection.rect.height }}/>
-              <form className="selection-bubble" style={{ left: selection.rect.x, top: selection.rect.y + selection.rect.height + 10 }} onSubmit={event => void send(event, zoneInstruction)} onMouseDown={event => event.stopPropagation()}>
-                <span>{selection.label}</span>
+              <form ref={bubbleBoxRef} className="selection-bubble" style={bubblePosition || { left: selection.rect.x, top: selection.rect.y + selection.rect.height + 10, visibility: "hidden" }} onSubmit={event => void send(event, zoneInstruction)} onMouseDown={event => event.stopPropagation()}>
+                <span title={selection.label}>{selection.label}</span>
                 <div className="bubble-capture">
                   {selection.capturing
                     ? <><LoaderCircle className="spin" size={14}/>Capture de la zone…</>
@@ -381,7 +406,6 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
                       : <><X size={14}/>Capture indisponible, la zone reste transmise</>}
                 </div>
                 <textarea ref={bubbleRef} value={zoneInstruction} maxLength={800} placeholder="Que voulez-vous changer ici ?" onChange={event => setZoneInstruction(event.target.value)} disabled={!configured || busy}/>
-                <Attachments images={attachments} onRemove={index => setAttachments(current => current.filter((_, position) => position !== index))} onAdd={attachFiles}/>
                 <div>
                   <button type="button" onClick={() => { setSelection(null); setZoneInstruction(""); }}>Annuler</button>
                   <button className="button button-primary" disabled={!zoneInstruction.trim() || !configured || busy}>{busy ? <LoaderCircle className="spin" size={15}/> : <Send size={15}/>}Envoyer</button>
@@ -401,6 +425,7 @@ export function LunaFormEditor({ form, onFormChange }: { form: Form; onFormChang
         <div className="luna-chat-messages" ref={messagesRef}>
           {!messages.length && <div className="chat-message assistant"><p>Encadrez une zone du formulaire, ou écrivez directement ce que vous souhaitez changer.</p></div>}
           {messages.map(message => <div className={`chat-message ${message.role === "luna" ? "assistant" : "user"}`} key={message.id}>
+            {message.role === "user" && sentImages[message.versionId] && <div className="chat-message-images">{sentImages[message.versionId].map((image, index) => <img key={index} src={image} alt="Image envoyée à Luna"/>)}</div>}
             <p>{message.text}</p>
             {message.role === "luna" && <button className="chat-undo" onClick={() => undoTo(message.versionId)} disabled={busy}><Undo2 size={13}/>Annuler cette modification</button>}
           </div>)}
