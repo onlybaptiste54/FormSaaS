@@ -35,7 +35,10 @@ export type FormDesign = {
 export type FormHealth = { score: number; checks: { label: string; ok: boolean; hint: string }[] };
 export type FormDraft = Partial<Pick<Form, "name" | "description" | "fields" | "design" | "content" | "thank_you">>;
 /** Le formulaire : l'objet qu'on edite avec Luna et que voit un visiteur. */
-export type Form = { id: string; campaign_id: string; campaign_name: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; draft: FormDraft | null; health: FormHealth; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+export type PageField = { name: string; type: string; label: string; required: boolean };
+export type Form = { id: string; campaign_id: string; campaign_name: string; name: string; slug: string; description: string; kind: string; status: string; visibility: string; fields: Field[]; design: FormDesign; content: FormContent; thank_you: Record<string, string>; html: string; draft_html: string | null; thanks_html: string; manifest: PageField[]; field_warnings: string[]; draft: FormDraft | null; health: FormHealth; visits: number; responses: number; conversion: number; archived: boolean; created_at: string; updated_at: string };
+export type TunnelPage = { id: string; role: "landing" | "form" | "thanks" | "step" | "custom"; position: number; slug: string | null; next_page_id: string | null; html: string; visits: number; conversions: number };
+export type FormTunnel = { id: string; name: string; status: string; entry_page_id: string | null; pages: TunnelPage[] };
 /** La campagne : un dossier (un client, un evenement) qui regroupe des formulaires. */
 export type Campaign = { id: string; name: string; client: string; objective: string; starts_on: string | null; ends_on: string | null; forms: number; active: number; visits: number; responses: number; conversion: number; last_activity: string; archived: boolean; created_at: string; updated_at: string };
 export type CampaignStats = {
@@ -58,6 +61,7 @@ export type LibraryTemplate = {
   name: string;
   category: string;
   description: string;
+  html: string;
   fields: Field[];
   field_count: number;
   design: FormDesign;

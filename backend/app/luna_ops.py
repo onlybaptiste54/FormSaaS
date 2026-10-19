@@ -265,7 +265,7 @@ def apply_ops(state: dict, ops: list[Operation]) -> tuple[dict, list[str]]:
 
 
 def validate_state(state: dict, previous: dict) -> None:
-    """Garde-fous non negociables, verifies avant d'ecrire quoi que ce soit."""
+    """Vérifie les invariants des champs avant d'écrire quoi que ce soit."""
     fields = _business_fields(state)
     if not fields:
         raise OpsError("Le formulaire doit garder au moins un champ.")
@@ -286,14 +286,3 @@ def validate_state(state: dict, previous: dict) -> None:
         if field["id"] in previous_by_id and field["type"] != previous_by_id[field["id"]]["type"]:
             kept = previous_by_id[field["id"]]["type"]
             raise OpsError(f"Le champ « {field['id']} » doit rester de type {kept} : des réponses y sont rattachées.")
-
-    style = (state.get("design") or {}).get("style") or {}
-    checks = (
-        ("ink", "surface", "le texte sur la carte"),
-        ("accent_ink", "accent", "le texte du bouton"),
-    )
-    for foreground, background, label in checks:
-        if style.get(foreground) and style.get(background):
-            ratio = contrast_ratio(style[foreground], style[background])
-            if ratio < 4.5:
-                raise OpsError(f"Contraste insuffisant pour {label} ({ratio:.1f}:1, minimum 4,5:1). Choisis des couleurs plus tranchées.")

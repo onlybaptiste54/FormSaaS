@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Bookmark, Check, Clock3, FileText, FolderOpen, LayoutTemplate, LoaderCircle, Plus, Search, Sparkles, Star, TrendingUp, X } from "lucide-react";
 import { PageHeader } from "@/components/shell";
 import { Loading } from "@/components/ui";
-import { FormRenderer, FormStage } from "@/components/form-renderer";
+import { PageFrame } from "@/components/page-frame";
 import { api } from "@/lib/api";
 import type { Campaign, Form, LibraryData, LibraryTemplate } from "@/lib/types";
 
@@ -144,7 +144,7 @@ function SavedTemplateCard({ template, onOpen, onUse, busy }: { template: Librar
 
 function RecentForm({ form }: { form: Form }) {
   return <Link href={`/campaigns/${form.campaign_id}/forms/${form.id}?tab=form`} className="recent-template-row">
-    <FormStage design={form.design} className="recent-template-visual"><span/><span/><span/></FormStage>
+    <div className="recent-template-visual"><PageFrame html={form.html} title={`Vignette de ${form.name}`} mode="thumb"/></div>
     <div><span>{form.campaign_name}</span><strong>{form.name}</strong><small>Modifié {relativeDate(form.updated_at)}</small></div>
     <div className="recent-template-stats"><strong>{form.responses}</strong><span>réponses</span></div>
     <ArrowRight size={18}/>
@@ -172,21 +172,14 @@ function CampaignPicker({ campaigns, busy, onClose, onPick }: { campaigns: Campa
 
 /** Vignette : le rendu reel, simplement mis a l'echelle. */
 function TemplateMiniature({ template }: { template: LibraryTemplate }) {
-  return <FormStage design={template.design} className="template-miniature">
-    <div className="template-miniature-scale">
-      <FormRenderer form={template} company={{ name: "Votre entreprise" }} mode="thumb"/>
-    </div>
-  </FormStage>;
+  return <div className="template-miniature"><div className="template-miniature-scale"><PageFrame html={template.html} title={`Vignette de ${template.name}`} mode="thumb"/></div></div>;
 }
 
 function TemplateModal({ template, saved, busyAction, onClose, onSave, onUse }: { template: LibraryTemplate; saved: boolean; busyAction: string; onClose: () => void; onSave: (template: LibraryTemplate) => void; onUse: (template: LibraryTemplate) => void }) {
-  const style = { "--client": template.accent || "#2F6B4F" } as React.CSSProperties;
   return <div className="template-modal-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose(); }}>
     <div className="template-modal" role="dialog" aria-modal="true" aria-label={`Aperçu de ${template.name}`}>
       <button className="template-modal-close" onClick={onClose} aria-label="Fermer"><X/></button>
-      <FormStage design={template.design} className="template-modal-preview" style={style}>
-        <FormRenderer form={template} company={{ name: "Votre entreprise" }} mode="thumb"/>
-      </FormStage>
+      <div className="template-modal-preview"><PageFrame html={template.html} title={`Aperçu de ${template.name}`} mode="thumb"/></div>
       <aside className="template-modal-copy">
         <span className="section-kicker">{saved ? <Bookmark size={14}/> : <TrendingUp size={14}/>}{saved ? "Votre modèle" : "Modèle Sillage"}</span>
         <h2>{template.name}</h2><p>{template.description}</p>

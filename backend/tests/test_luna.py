@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.luna import LunaAPIError, generate_campaign, revise_campaign
+from app.luna import LunaAPIError, generate_campaign, generate_page, merge_page_region, revise_campaign, revise_page, stream_page_revision
 
 
 DESIGN = {
@@ -175,17 +175,18 @@ def test_revision_applies_only_the_requested_operations():
 
 def test_revision_retries_once_when_a_guard_rail_fails():
     attempts = []
+    field = {"id": "urgence", "label": "Urgence", "type": "radio", "required": True, "options": ["Oui"], "scale": None, "placeholder": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
         context = json.loads(json.loads(request.content)["input"][0]["content"][0]["text"])
         attempts.append(context.get("correction_demandee", ""))
         if len(attempts) == 1:
-            return _ops_response("Fond sombre.", [{**THEME, "surface": "#111111", "ink": "#222222"}])
-        return _ops_response("Fond sombre et texte clair.", [{**THEME, "surface": "#111111", "ink": "#F5F5F5"}])
+            return _ops_response("Champ urgence ajouté.", [{"op": "add_field", "after": None, "field": field}])
+        return _ops_response("Champ urgence corrigé.", [{"op": "add_field", "after": None, "field": {**field, "options": ["Oui", "Non"]}}])
 
     revision = revise_campaign(
         CURRENT,
-        "Passe en sombre",
+        "Ajoute une question sur l'urgence",
         {"name": "Atelier Test"},
         selection={"element_ids": ["card"], "label": "Formulaire complet", "view": "form"},
         api_key="test-key",
@@ -193,8 +194,8 @@ def test_revision_retries_once_when_a_guard_rail_fails():
     )
 
     assert len(attempts) == 2
-    assert "Contraste insuffisant" in attempts[1]
-    assert revision["design"]["style"]["ink"] == "#F5F5F5"
+    assert "deux options" in attempts[1]
+    assert next(field for field in revision["fields"] if field["id"] == "urgence")["options"] == ["Oui", "Non"]
 
 
 def test_revision_refuses_to_change_the_type_of_an_existing_field():
@@ -214,3 +215,154 @@ def test_revision_refuses_to_change_the_type_of_an_existing_field():
             transport=httpx.MockTransport(handler),
         )
     assert "rester de type email" in str(error.value)
+
+
+PAGE = '<!doctype html><html lang="fr"><head><style>button{color:blue}</style></head><body><form data-sillage="form"><section data-sillage-region="hero"><h1>Contact</h1></section><input name="email" type="email"><div data-sillage="consent"></div><button>Envoyer</button></form></body></html>'
+
+
+def _page_response(message: str, html: str, region: str | None = None) -> httpx.Response:
+    return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps({"message": message, "html": html, "region": region})}]}]})
+
+
+def test_page_revision_receives_full_context_and_returns_named_region():
+    capture = "data:image/png;base64,aGVsbG8="
+    reference = "data:image/png;base64,d29ybGQ="
+    fragment = '<section data-sillage-region="hero"><h1>Nouveau titre</h1></section>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["text"]["format"]["name"] == "sillage_page"
+        assert payload["store"] is False
+        stable = json.loads(payload["input"][0]["content"][0]["text"])
+        assert stable["brief_initial"] == {"prompt": "Une prise de contact", "context": "Atelier"}
+        assert stable["existing_field_names"] == ["email"]
+        assert stable["identity"]["name"] == "Atelier Test"
+        assert "siret" not in json.dumps(stable)
+        history = payload["input"][1]["content"]
+        assert json.loads(history[0]["text"])["recent_exchanges"][-1]["text"] == "Rends le titre plus clair"
+        assert history[1] == {"type": "input_image", "image_url": reference, "detail": "high"}
+        current = payload["input"][2]["content"]
+        context = json.loads(current[0]["text"])
+        assert context["current_html"] == PAGE
+        assert context["selection"]["region"] == "hero"
+        assert context["selection"]["rect"] == {"x": 10, "y": 20, "width": 50, "height": 12}
+        assert context["page_stats"]["visits"] == 30
+        assert current[1] == {"type": "input_image", "image_url": capture, "detail": "high"}
+        return _page_response("Titre clarifié.", fragment, "hero")
+
+    result = revise_page(
+        PAGE, "Rends le titre plus clair", {"name": "Atelier Test", "siret": "SECRET"},
+        selection={"region": "hero", "rect": {"x": 10, "y": 20, "width": 50, "height": 12}},
+        brief={"prompt": "Une prise de contact", "context": "Atelier"},
+        stats={"visits": 30, "conversions": 9}, existing_names=["email", "consent"],
+        history=[{"role": "user", "text": "Rends le titre plus clair", "images": [reference]}],
+        screenshot_data_url=capture, api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert result == {"message": "Titre clarifié.", "html": fragment, "region": "hero"}
+
+
+def test_page_revision_retries_invalid_region_as_full_page_without_resending_images():
+    capture = "data:image/png;base64,aGVsbG8="
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return _page_response("Titre changé.", '<section data-sillage-region="hero"><h1>Incomplet', "hero")
+        context = json.loads(payload["input"][-1]["content"][0]["text"])
+        assert context["region_interdite"] is True
+        assert "fragment" in context["correction_demandee"]
+        assert all(block["type"] != "input_image" for message in payload["input"] for block in message["content"])
+        return _page_response("Page réécrite.", PAGE)
+
+    result = revise_page(
+        PAGE, "Change le titre", {"name": "Atelier Test"}, selection={"region": "hero"},
+        history=[{"role": "user", "text": "Avant", "images": [capture]}],
+        screenshot_data_url=capture, images=[capture], api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requests) == 2
+    assert result["region"] is None
+    assert result["html"] == PAGE
+
+
+def test_page_revision_accepts_style_region_and_rejects_mismatched_region():
+    style = "<style>button{color:red}</style>"
+    result = revise_page(
+        PAGE, "Bouton rouge", "Atelier Test", selection={"region": "hero"},
+        api_key="test-key", transport=httpx.MockTransport(lambda _: _page_response("Bouton rouge.", style, "style")),
+    )
+    assert result["html"] == style
+    with pytest.raises(LunaAPIError, match="fragment"):
+        revise_page(
+            PAGE, "Change le titre", "Atelier Test", selection={"region": "hero"}, api_key="test-key",
+            transport=httpx.MockTransport(lambda _: _page_response("Titre changé.", '<section data-sillage-region="other">Titre</section>', "hero")),
+        )
+
+
+def test_generate_page_requests_a_complete_document():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        stable = json.loads(payload["input"][0]["content"][0]["text"])
+        assert stable["brief_initial"] == {"prompt": "Un contact", "context": "Artisan"}
+        current = json.loads(payload["input"][-1]["content"][0]["text"])
+        assert current["current_html"] == ""
+        return _page_response("Page créée.", PAGE)
+
+    result = generate_page("Un contact", "Atelier Test", context="Artisan", api_key="test-key", transport=httpx.MockTransport(handler))
+    assert result["html"] == PAGE
+    assert result["region"] is None
+
+
+def test_merge_page_region_preserves_the_rest_of_the_document():
+    fragment = '<section data-sillage-region="hero"><h1>Un autre titre</h1></section>'
+    merged = merge_page_region(PAGE, fragment, "hero")
+    assert fragment in merged
+    assert '<input name="email" type="email">' in merged
+    assert "button{color:blue}" in merged
+    assert merge_page_region(merged, "<style>button{color:red}</style>", "style").count("<style>") == 1
+    assert merge_page_region(PAGE, PAGE, None) == PAGE
+    with pytest.raises(ValueError, match="style"):
+        merge_page_region(PAGE, "<style>button{color:red}</style><style>body{color:black}</style>", "style")
+    with pytest.raises(ValueError, match="absente"):
+        merge_page_region(PAGE, fragment.replace('"hero"', '"missing"'), "missing")
+
+
+def test_stream_page_revision_yields_preview_then_validated_final():
+    output = json.dumps({"message": "Page enrichie.", "region": None, "html": PAGE})
+    chunks = [output[index:index + 61] for index in range(0, len(output), 61)]
+    events = "".join(f'data: {json.dumps({"type": "response.output_text.delta", "delta": chunk})}\n\n' for chunk in chunks)
+    events += 'data: {"type":"response.completed","response":{}}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=events)
+
+    updates = list(stream_page_revision(
+        PAGE, "Ajoute une section", "Atelier Test", selection={"view": "form"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    ))
+    assert any(update["type"] == "preview" and "<html" in update["html"] for update in updates)
+    assert updates[-1] == {"type": "final", "message": "Page enrichie.", "region": None, "html": PAGE}
+
+
+def test_stream_page_revision_resets_invalid_fragment_and_omits_images_on_retry():
+    image = "data:image/png;base64,aGVsbG8="
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        output = ({"message": "Incomplet.", "region": "hero", "html": '<section data-sillage-region="hero">'}
+                  if len(calls) == 1 else {"message": "Page corrigée.", "region": None, "html": PAGE})
+        event = json.dumps({"type": "response.output_text.delta", "delta": json.dumps(output)})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=f"data: {event}\n\n")
+
+    updates = list(stream_page_revision(
+        PAGE, "Change le titre", "Atelier Test", selection={"region": "hero"},
+        screenshot_data_url=image, images=[image], api_key="test-key", transport=httpx.MockTransport(handler),
+    ))
+    assert len(calls) == 2
+    assert {"type": "reset"} in updates
+    assert updates[-1]["type"] == "final"
+    assert all(block["type"] != "input_image" for message in calls[1]["input"] for block in message["content"])

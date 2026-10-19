@@ -4,9 +4,8 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Archive, ArchiveRestore, ArrowLeft, BarChart3, Check, Copy, ExternalLink, FileText, LayoutTemplate, MessageSquareText, Plus, Save, Settings2 } from "lucide-react";
-import { FormRenderer, FormStage } from "@/components/form-renderer";
+import { PageFrame } from "@/components/page-frame";
 import { ResponsesInbox } from "@/components/responses-inbox";
-import { useMe } from "@/components/shell";
 import { Badge, EmptyState, ErrorState, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
 import type { Campaign, CampaignStats, Form } from "@/lib/types";
@@ -64,9 +63,6 @@ export default function CampaignDetail({ params }: { params: Promise<{ id: strin
 }
 
 function Forms({ campaign, forms, onReload }: { campaign: Campaign; forms: Form[]; onReload: () => void }) {
-  const me = useMe();
-  const company = { name: me?.company.name || "Votre entreprise", logo: me?.company.logo };
-
   async function duplicate(form: Form) {
     await api(`/forms/${form.id}/duplicate`, { method: "POST" });
     onReload();
@@ -85,9 +81,7 @@ function Forms({ campaign, forms, onReload }: { campaign: Campaign; forms: Form[
     <div className="form-card-grid">
       {forms.map(form => <article className={`panel form-card ${form.archived ? "archived" : ""}`} key={form.id}>
         <Link href={`/campaigns/${campaign.id}/forms/${form.id}`} className="form-card-preview" aria-label={`Ouvrir ${form.name}`}>
-          <FormStage design={form.design} className="template-miniature">
-            <div className="template-miniature-scale"><FormRenderer form={form} company={company} mode="thumb"/></div>
-          </FormStage>
+          <div className="template-miniature"><div className="template-miniature-scale"><PageFrame html={form.html} title={`Vignette de ${form.name}`} mode="thumb"/></div></div>
         </Link>
         <div className="form-card-copy">
           <div className="title-line">

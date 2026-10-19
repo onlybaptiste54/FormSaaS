@@ -74,9 +74,22 @@ def test_a_choice_field_needs_real_options():
         run([{"op": "add_field", "after": None, "field": {"id": "urgence", "label": "Urgent ?", "type": "radio", "required": True, "options": ["Oui"], "scale": None, "placeholder": None}}])
 
 
-def test_an_unreadable_theme_is_refused():
-    with pytest.raises(OpsError, match="Contraste"):
-        run([theme(surface="#111111", ink="#1A1A1A")])
+def test_a_theme_with_low_contrast_does_not_block_revision():
+    after, _ = run([theme(surface="#111111", ink="#1A1A1A")])
+    assert after["design"]["style"]["surface"] == "#111111"
+
+
+def test_preexisting_low_contrast_does_not_block_a_text_change():
+    before = state()
+    before["design"]["style"].update(surface="#111111", ink="#1A1A1A")
+    parsed = LunaOps.model_validate({"message": "Titre modifié.", "ops": [{"op": "set_text", "target": "name", "value": "Nouveau titre"}]})
+
+    after, touched = apply_ops(before, parsed.ops)
+    validate_state(after, before)
+
+    assert after["name"] == "Nouveau titre"
+    assert touched == ["title"]
+    assert after["design"] == before["design"]
 
 
 def test_a_dark_theme_with_light_text_passes():

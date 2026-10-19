@@ -1,5 +1,5 @@
 from datetime import date, datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -9,6 +9,14 @@ from .database import Base
 
 def uid() -> str:
     return str(uuid4())
+
+
+def thanks_page_id(form_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"sillage:form:{form_id}:thanks"))
+
+
+def initial_tunnel_id(form_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"sillage:form:{form_id}:tunnel"))
 
 
 def now() -> datetime:
@@ -73,6 +81,26 @@ class Campaign(Base):
     company: Mapped[Company] = relationship(back_populates="campaigns")
     creator: Mapped[User] = relationship(back_populates="campaigns")
     forms: Mapped[list["Form"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="Form.created_at")
+    tunnels: Mapped[list["Tunnel"]] = relationship(back_populates="campaign", cascade="all, delete-orphan", order_by="Tunnel.created_at")
+
+
+class Tunnel(Base):
+    """Parcours de pages au sein d'une campagne."""
+
+    __tablename__ = "tunnels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    name: Mapped[str] = mapped_column(String(140))
+    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    entry_page_id: Mapped[str | None] = mapped_column(ForeignKey("pages.id", use_alter=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    campaign: Mapped[Campaign] = relationship(back_populates="tunnels")
+    pages: Mapped[list["Page"]] = relationship(back_populates="tunnel", foreign_keys="Page.tunnel_id", cascade="all, delete-orphan", order_by="Page.position")
+    entry_page: Mapped["Page | None"] = relationship(foreign_keys=[entry_page_id], post_update=True)
 
 
 class Form(Base):
@@ -106,6 +134,34 @@ class Form(Base):
     creator: Mapped[User] = relationship()
     responses: Mapped[list["FormResponse"]] = relationship(back_populates="form", cascade="all, delete-orphan")
     versions: Mapped[list["FormVersion"]] = relationship(back_populates="form", cascade="all, delete-orphan", order_by="FormVersion.created_at")
+    pages: Mapped[list["Page"]] = relationship(back_populates="form", cascade="all, delete-orphan", order_by="Page.position")
+
+
+class Page(Base):
+    """Document HTML d'un tunnel ; form_id garde la collecte historique."""
+
+    __tablename__ = "pages"
+    __table_args__ = (UniqueConstraint("form_id", "role", name="uq_pages_form_role"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    form_id: Mapped[str | None] = mapped_column(ForeignKey("forms.id"), index=True, nullable=True)
+    tunnel_id: Mapped[str | None] = mapped_column(ForeignKey("tunnels.id"), index=True, nullable=True)
+    slug: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
+    role: Mapped[str] = mapped_column(String(20))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    next_page_id: Mapped[str | None] = mapped_column(ForeignKey("pages.id"), nullable=True)
+    next_page_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    html: Mapped[str] = mapped_column(Text)
+    draft_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manifest: Mapped[list] = mapped_column(JSON, default=list)
+    draft_manifest: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    visits: Mapped[int] = mapped_column(Integer, default=0)
+    conversions: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    form: Mapped[Form | None] = relationship(back_populates="pages", foreign_keys=[form_id])
+    tunnel: Mapped[Tunnel | None] = relationship(back_populates="pages", foreign_keys=[tunnel_id])
 
 
 class FormVersion(Base):
@@ -119,6 +175,9 @@ class FormVersion(Base):
     source: Mapped[str] = mapped_column(String(20), default="luna")
     instruction: Mapped[str] = mapped_column(Text, default="")
     message: Mapped[str] = mapped_column(Text, default="")
+    # La capture et les references restent attachees au message Luna apres rechargement.
+    screenshot_data_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    images: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     form: Mapped[Form] = relationship(back_populates="versions")

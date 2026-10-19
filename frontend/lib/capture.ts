@@ -2,7 +2,8 @@ import { toPng } from "html-to-image";
 
 /** Largeur maximale envoyee a Luna : au-dela, l'image coute plus qu'elle n'apporte. */
 const MAX_WIDTH = 1200;
-const MAX_BYTES = 3_800_000;
+// 2,9 Mo encodes en base64 tiennent sous les 4 millions de caracteres de l'API.
+const MAX_BYTES = 2_900_000;
 /** Marge autour de la zone encadree, pour que Luna voie l'environnement. */
 const CONTEXT_RATIO = 0.55;
 const MIN_CONTEXT = 120;
@@ -12,17 +13,16 @@ type Rect = { x: number; y: number; width: number; height: number };
 /**
  * Capture la zone encadree avec son environnement.
  *
- * On photographie le canevas entier (le vrai fond est donc conserve, y compris
- * sur un formulaire sombre ou en verre), puis on recadre autour de la zone en
+ * On photographie le document interne de l'iframe (son vrai fond est conserve),
+ * puis on recadre autour de la zone en
  * gardant une marge, et on redessine le cadre de selection sur l'image : Luna
  * voit a la fois ce qui est vise et ce qui l'entoure.
  */
-export async function captureRegion(canvas: HTMLElement, rect: Rect, accent = "#2F6B4F"): Promise<string> {
+export async function captureRegion(page: HTMLElement, rect: Rect, accent = "#2F6B4F"): Promise<string> {
   const ratio = 2;
-  const full = await toPng(canvas, {
+  const full = await toPng(page, {
     cacheBust: true,
     pixelRatio: ratio,
-    filter: node => !(node instanceof HTMLElement) || !node.classList.contains("selection-rect"),
   });
   const image = await loadImage(full);
 
@@ -60,9 +60,16 @@ export async function captureRegion(canvas: HTMLElement, rect: Rect, accent = "#
   );
 
   let dataUrl = output.toDataURL("image/png");
-  if (dataUrl.length > MAX_BYTES) dataUrl = output.toDataURL("image/jpeg", 0.85);
-  if (dataUrl.length > MAX_BYTES) throw new Error("Capture trop volumineuse");
+  if (dataUrlByteLength(dataUrl) > MAX_BYTES) dataUrl = output.toDataURL("image/jpeg", 0.85);
+  if (dataUrlByteLength(dataUrl) > MAX_BYTES) throw new Error("Capture trop volumineuse");
   return dataUrl;
+}
+
+/** Taille du binaire represente par la data URL, sans compter le prefixe ni le base64. */
+function dataUrlByteLength(dataUrl: string): number {
+  const payload = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  return Math.floor(payload.length * 3 / 4) - padding;
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {

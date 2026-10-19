@@ -1,7 +1,8 @@
 import json
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import MetaData, create_engine, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .config import settings
 
@@ -33,6 +34,11 @@ def initialize_schema():
     with engine.begin() as connection:
         if engine.dialect.name == "postgresql":
             connection.execute(text("SELECT pg_advisory_xact_lock(736455141)"))
+        elif engine.dialect.name == "sqlite":
+            # Le pilote SQLite n'ouvre pas toujours une transaction avant le
+            # premier DDL. Sans BEGIN explicite, un échec laisse une table
+            # reconstruite à moitié et une reprise impossible.
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
         upgrade(connection)
 
 
@@ -49,6 +55,10 @@ def add_column(connection, table: str, column: str, ddl: str):
 
 
 def upgrade(connection):
+    # L'import charge les tables dans Base.metadata avant create_all, y compris
+    # lorsque la migration est invoquee sans avoir importe l'API.
+    from . import models  # noqa: F401
+
     campaign_columns = columns_of(connection, "campaigns")
     # Une base d'avant la separation : `campaigns` porte encore le formulaire.
     legacy = "fields" in campaign_columns
@@ -66,9 +76,168 @@ def upgrade(connection):
     add_column(connection, "campaigns", "starts_on", "DATE")
     add_column(connection, "campaigns", "ends_on", "DATE")
     add_column(connection, "responses", "form_id", "VARCHAR(36)")
+    add_column(connection, "form_versions", "screenshot_data_url", "TEXT")
+    add_column(connection, "form_versions", "images", "JSON")
 
     if legacy:
         split_campaigns_into_forms(connection)
+
+    connection.execute(text("UPDATE form_versions SET images = '[]' WHERE images IS NULL"))
+    upgrade_pages_for_tunnels(connection)
+    migrate_forms_to_pages(connection)
+    migrate_forms_to_tunnels(connection)
+
+
+def upgrade_pages_for_tunnels(connection):
+    """Rend les pages autonomes tout en gardant les documents du Lot 1."""
+    from .models import Form, Page, Tunnel
+
+    page_columns = {column["name"]: column for column in inspect(connection).get_columns("pages")}
+    if connection.dialect.name == "sqlite" and not page_columns["form_id"]["nullable"]:
+        # SQLite ne sait pas retirer NOT NULL. La nouvelle table est remplie et
+        # verifiee avant de remplacer l'ancienne dans la transaction courante.
+        metadata = MetaData()
+        Form.__table__.to_metadata(metadata)
+        Tunnel.__table__.to_metadata(metadata)
+        replacement = Page.__table__.to_metadata(metadata, name="pages_lot3_new")
+        connection.execute(CreateTable(replacement))
+        existing_columns = [column.name for column in Page.__table__.columns if column.name in page_columns]
+        names = ", ".join(existing_columns)
+        connection.execute(text(f"INSERT INTO pages_lot3_new ({names}) SELECT {names} FROM pages"))
+        old_count = connection.scalar(text("SELECT count(*) FROM pages"))
+        new_count = connection.scalar(text("SELECT count(*) FROM pages_lot3_new"))
+        if old_count != new_count:
+            raise RuntimeError("La copie des pages est incomplete")
+        connection.execute(text("PRAGMA defer_foreign_keys = ON"))
+        connection.execute(text("DROP TABLE pages"))
+        connection.execute(text("ALTER TABLE pages_lot3_new RENAME TO pages"))
+        for index in Page.__table__.indexes:
+            connection.execute(CreateIndex(index))
+    else:
+        if connection.dialect.name == "postgresql" and not page_columns["form_id"]["nullable"]:
+            connection.execute(text("ALTER TABLE pages ALTER COLUMN form_id DROP NOT NULL"))
+        add_column(connection, "pages", "tunnel_id", "VARCHAR(36) REFERENCES tunnels(id)")
+        add_column(connection, "pages", "next_page_url", "VARCHAR(2048)")
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_pages_tunnel_id ON pages (tunnel_id)"))
+
+
+def migrate_forms_to_tunnels(connection):
+    """Un tunnel initial stable par formulaire existant, sans toucher aux réponses."""
+    from .models import Form, Page, Tunnel, initial_tunnel_id
+
+    forms = Form.__table__
+    pages = Page.__table__
+    tunnels = Tunnel.__table__
+    existing_tunnels = set(connection.execute(select(tunnels.c.id)).scalars())
+    entry_pages = {
+        row.form_id: row
+        for row in connection.execute(select(pages.c.id, pages.c.form_id, pages.c.tunnel_id).where(pages.c.role == "form"))
+        if row.form_id is not None
+    }
+
+    for form in connection.execute(select(forms)):
+        entry = entry_pages.get(form.id)
+        if entry is None:
+            continue
+        tunnel_id = entry.tunnel_id or initial_tunnel_id(form.id)
+        if tunnel_id not in existing_tunnels:
+            connection.execute(tunnels.insert().values(
+                id=tunnel_id, campaign_id=form.campaign_id, name=form.name,
+                slug=form.slug, status=form.status, entry_page_id=entry.id,
+                created_at=form.created_at, updated_at=form.updated_at,
+            ))
+            existing_tunnels.add(tunnel_id)
+        connection.execute(
+            pages.update()
+            .where(pages.c.form_id == form.id, pages.c.tunnel_id.is_(None))
+            .values(tunnel_id=tunnel_id)
+        )
+
+
+def migrate_forms_to_pages(connection):
+    """Ajoute les documents manquants sans reecrire les donnees existantes."""
+    from .models import Campaign, Company, Form, FormResponse, Page, thanks_page_id
+    from .page_document import legacy_to_html, prepare_page
+
+    forms = Form.__table__
+    campaigns = Campaign.__table__
+    companies = Company.__table__
+    pages = Page.__table__
+    responses = FormResponse.__table__
+    company_by_id = {
+        row._mapping["id"]: dict(row._mapping)
+        for row in connection.execute(select(companies))
+    }
+    campaign_company_ids = {
+        campaign_id: company_id
+        for campaign_id, company_id in connection.execute(
+            select(campaigns.c.id, campaigns.c.company_id)
+        )
+    }
+    existing = {
+        (row.form_id, row.role): row.id
+        for row in connection.execute(select(pages.c.id, pages.c.form_id, pages.c.role))
+    }
+    response_counts = {
+        form_id: count
+        for form_id, count in connection.execute(
+            select(responses.c.form_id, func.count(responses.c.id)).group_by(responses.c.form_id)
+        )
+    }
+
+    for row in connection.execute(select(forms)):
+        form = dict(row._mapping)
+        form_id = form["id"]
+        missing_form = (form_id, "form") not in existing
+        missing_thanks = (form_id, "thanks") not in existing
+        if not missing_form and not missing_thanks:
+            continue
+
+        company = company_by_id[campaign_company_ids[form["campaign_id"]]]
+
+        state = {
+            "name": form["name"], "description": form["description"],
+            "kind": form["kind"], "fields": form["fields"] or [],
+            "design": form["design"] or {}, "content": form["content"] or {},
+            "thank_you": form["thank_you"] or {},
+        }
+        draft = form["draft"] or None
+        thanks_id = existing.get((form_id, "thanks")) or thanks_page_id(form_id)
+        response_count = response_counts.get(form_id, 0)
+
+        if missing_thanks:
+            thanks_html, thanks_manifest = prepare_page(
+                legacy_to_html(state, company, role="thanks"), require_form=False
+            )
+            draft_thanks_html = None
+            draft_thanks_manifest = None
+            if draft and draft.get("thank_you") != state["thank_you"]:
+                draft_thanks_html, draft_thanks_manifest = prepare_page(
+                    legacy_to_html({**state, **draft}, company, role="thanks"), require_form=False
+                )
+            connection.execute(pages.insert().values(
+                id=thanks_id, form_id=form_id, slug=None, role="thanks", position=1,
+                next_page_id=None, html=thanks_html, draft_html=draft_thanks_html,
+                manifest=thanks_manifest, draft_manifest=draft_thanks_manifest,
+                visits=response_count, conversions=0,
+                created_at=form["created_at"], updated_at=form["updated_at"],
+            ))
+
+        if missing_form:
+            html, manifest = prepare_page(legacy_to_html(state, company), require_form=True)
+            draft_html = None
+            draft_manifest = None
+            if draft:
+                draft_html, draft_manifest = prepare_page(
+                    legacy_to_html({**state, **draft}, company), require_form=True
+                )
+            connection.execute(pages.insert().values(
+                id=form_id, form_id=form_id, slug=form["slug"], role="form", position=0,
+                next_page_id=thanks_id, html=html, draft_html=draft_html,
+                manifest=manifest, draft_manifest=draft_manifest,
+                visits=form["visits"] or 0, conversions=response_count,
+                created_at=form["created_at"], updated_at=form["updated_at"],
+            ))
 
 
 def split_campaigns_into_forms(connection):
@@ -83,7 +252,7 @@ def split_campaigns_into_forms(connection):
     connection.execute(text(f"INSERT INTO forms (id, campaign_id, creator_id, {columns}) SELECT id, id, creator_id, {values} FROM campaigns"))
     connection.execute(text("UPDATE responses SET form_id = campaign_id"))
     if inspect(connection).has_table("campaign_versions"):
-        connection.execute(text("INSERT INTO form_versions (id, form_id, snapshot, source, instruction, message, created_at) SELECT id, campaign_id, snapshot, source, instruction, message, created_at FROM campaign_versions"))
+        connection.execute(text("INSERT INTO form_versions (id, form_id, snapshot, source, instruction, message, created_at, images) SELECT id, campaign_id, snapshot, source, instruction, message, created_at, '[]' FROM campaign_versions"))
         connection.execute(text("DROP TABLE campaign_versions"))
 
     # SQLite refuse de supprimer une colonne indexee : l'index part d'abord.

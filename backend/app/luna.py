@@ -4,6 +4,7 @@ import logging
 import re
 import time
 import unicodedata
+from html.parser import HTMLParser
 from typing import Literal
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
+from .page_document import MAX_PAGE_HTML
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,28 @@ logger = logging.getLogger(__name__)
 
 class LunaAPIError(RuntimeError):
     """Raised when OpenAI is configured but cannot produce a valid campaign."""
+
+
+class LunaPage(BaseModel):
+    """A complete page, or one explicitly identified region of that page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=400)
+    region: str | None = Field(pattern=r"^(?:style|[a-zA-Z][\w-]{0,63})$")
+    html: str = Field(min_length=1, max_length=MAX_PAGE_HTML)
+
+
+LUNA_PAGE_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de Sillage.
+Tu écris directement le HTML et le CSS responsive d'une page française, à partir du brief, de l'identité, de la page actuelle et de la demande.
+Réponds exclusivement avec le JSON du schéma : message (une phrase en français), html (la page entière ou un fragment) et region (nom de région ou null).
+
+La page est un document HTML complet avec <!doctype html>, <html lang="fr">, <head>, un seul <style> et <body>. Écris un design original et lisible, adapté à la marque, au mobile et au bureau. Pas de JavaScript, de balise script, iframe, object, embed, d'attribut on*, de CSS @import ou d'URL externe dans le CSS. Les images peuvent utiliser uniquement des URL https ou data:image fournies. Les ressources non fournies ne doivent pas être inventées.
+Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient les champs, un bouton d'envoi et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
+Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
+Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+La page sera assainie et validée par le serveur avant stockage. N'extrais aucune donnée personnelle des images.
+"""
 
 
 class LunaField(BaseModel):
@@ -391,9 +415,414 @@ def _request_openai(
 def _validate_screenshot(data_url: str | None) -> str | None:
     if not data_url:
         return None
-    if not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", data_url):
+    if len(data_url) > 4_000_000 or not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", data_url):
         raise LunaAPIError("La capture envoyée à Luna n'est pas une image valide.")
     return data_url
+
+
+_VOID_HTML = frozenset("area base br col embed hr img input link meta param source track wbr".split())
+
+
+class _FragmentShape(HTMLParser):
+    """Check that a region response contains one complete, named root element."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[str] = []
+        self.root_count = 0
+        self.root_region: str | None = None
+        self.root_tag: str | None = None
+        self.invalid = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self.stack:
+            self.root_count += 1
+            self.root_tag = tag
+            self.root_region = dict(attrs).get("data-sillage-region")
+        if tag not in _VOID_HTML:
+            self.stack.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self.stack:
+            self.invalid = True
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID_HTML:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.stack or self.stack[-1] != tag:
+            self.invalid = True
+            return
+        self.stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if not self.stack and data.strip():
+            self.invalid = True
+
+    def handle_decl(self, decl: str) -> None:
+        self.invalid = True
+
+    def handle_comment(self, data: str) -> None:
+        if not self.stack:
+            self.invalid = True
+
+
+class _RegionSpans(HTMLParser):
+    """Locate complete elements in the existing document without reserializing it."""
+
+    def __init__(self, html: str) -> None:
+        super().__init__(convert_charrefs=False)
+        self.html = html
+        self.line_starts = [0]
+        for match in re.finditer("\n", html):
+            self.line_starts.append(match.end())
+        self.stack: list[tuple[str, str | None, int]] = []
+        self.regions: dict[str, list[tuple[int, int]]] = {}
+        self.styles: list[tuple[int, int]] = []
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        return self.line_starts[line - 1] + column
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _VOID_HTML:
+            self.stack.append((tag, dict(attrs).get("data-sillage-region"), self._offset()))
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.stack or self.stack[-1][0] != tag:
+            return
+        _, region, start = self.stack.pop()
+        offset = self._offset()
+        close = re.match(r"</\s*[a-zA-Z][\w:-]*\s*>", self.html[offset:])
+        if not close:
+            return
+        span = (start, offset + close.end())
+        if region:
+            self.regions.setdefault(region, []).append(span)
+        if tag == "style":
+            self.styles.append(span)
+
+
+def merge_page_region(current_html: str, fragment: str, region: str | None) -> str:
+    """Replace exactly one named region or style block in a stored page.
+
+    The caller must run prepare_page on the merged document before storage.
+    """
+    candidate = LunaPage(message="Région remplacée.", html=fragment, region=region)
+    _validate_page_result(candidate)
+    if region is None:
+        return fragment
+    finder = _RegionSpans(current_html)
+    finder.feed(current_html)
+    spans = finder.styles if region == "style" else finder.regions.get(region, [])
+    if len(spans) != 1:
+        raise ValueError(f"La région {region} est absente ou utilisée plusieurs fois dans la page.")
+    start, end = spans[0]
+    merged = current_html[:start] + fragment.strip() + current_html[end:]
+    if len(merged) > MAX_PAGE_HTML:
+        raise ValueError("La page HTML dépasse la taille autorisée après modification.")
+    return merged
+
+
+def _validate_page_result(result: LunaPage) -> None:
+    html = result.html.strip()
+    if result.region is None:
+        if not re.match(r"(?is)^<!doctype\s+html>\s*<html\b", html) or not re.search(r"(?is)</html>\s*$", html):
+            raise ValueError("La réponse doit contenir une page HTML complète.")
+        return
+    shape = _FragmentShape()
+    shape.feed(html)
+    shape.close()
+    if result.region == "style":
+        if shape.invalid or shape.stack or shape.root_count != 1 or shape.root_tag != "style":
+            raise ValueError("La région style doit contenir un unique bloc <style> complet.")
+        return
+    if shape.invalid or shape.stack or shape.root_count != 1 or shape.root_region != result.region or shape.root_tag in (_VOID_HTML | {"style"}):
+        raise ValueError("Le fragment doit ouvrir et fermer sur sa région data-sillage-region.")
+
+
+def _page_request(
+    *,
+    html: str,
+    instruction: str,
+    identity: dict,
+    selection: dict,
+    history: list[dict],
+    brief: dict | str | None,
+    stats: dict | None,
+    existing_names: list[str],
+    screenshot: str | None,
+    images: list[str],
+    model: str,
+    correction: str = "",
+    include_images: bool = True,
+) -> dict:
+    # Put repeatable context ahead of the current page and request for prompt caching.
+    stable = {
+        "identity": identity,
+        "brief_initial": brief or {},
+        "existing_field_names": existing_names,
+        "anchors": {
+            "collection": '<form data-sillage="form">',
+            "consent": '<div data-sillage="consent"></div>',
+            "regions": 'data-sillage-region="nom"',
+        },
+    }
+    input_messages = [{"role": "user", "content": [{"type": "input_text", "text": json.dumps(stable, ensure_ascii=False)}]}]
+    history_text = []
+    history_images: list[dict] = []
+    for exchange in history[-12:]:
+        if exchange.get("role") not in {"user", "luna", "assistant"}:
+            continue
+        history_text.append({"role": exchange["role"], "text": str(exchange.get("text") or "")[:1200]})
+        if include_images:
+            for image in (exchange.get("images") or [])[:3]:
+                if len(history_images) >= 6:
+                    break
+                validated_image = _validate_screenshot(image)
+                if validated_image:
+                    history_images.append({"type": "input_image", "image_url": validated_image, "detail": "high"})
+    if history_text:
+        blocks = [{"type": "input_text", "text": json.dumps({"recent_exchanges": history_text}, ensure_ascii=False)}]
+        blocks.extend(history_images)
+        input_messages.append({"role": "user", "content": blocks})
+    current = {
+        "current_html": html,
+        "instruction": instruction,
+        "selection": selection,
+        "page_stats": stats or {},
+    }
+    if correction:
+        current["correction_demandee"] = correction
+        current["region_interdite"] = True
+    content = [{"type": "input_text", "text": json.dumps(current, ensure_ascii=False)}]
+    if include_images:
+        if screenshot:
+            content.append({"type": "input_image", "image_url": screenshot, "detail": "high"})
+        content.extend({"type": "input_image", "image_url": image, "detail": "high"} for image in images[:3])
+    input_messages.append({"role": "user", "content": content})
+    safety_source = str(identity.get("name") or "sillage-user")
+    return {
+        "model": model,
+        "instructions": LUNA_PAGE_INSTRUCTIONS,
+        "input": input_messages,
+        "text": {"format": {"type": "json_schema", "name": "sillage_page", "strict": True, "schema": LunaPage.model_json_schema()}},
+        "max_output_tokens": 16000,
+        "store": False,
+        "safety_identifier": hashlib.sha256(safety_source.encode()).hexdigest()[:32],
+    }
+
+
+def revise_page(
+    html: str,
+    instruction: str,
+    identity: str | dict,
+    *,
+    selection: dict,
+    history: list[dict] | None = None,
+    brief: dict | str | None = None,
+    stats: dict | None = None,
+    existing_names: list[str] | None = None,
+    screenshot_data_url: str | None = None,
+    images: list[str] | None = None,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Ask Luna to rewrite a complete page or one selected region.
+
+    The caller merges a region and sanitizes the resulting document before any
+    storage. The returned HTML is untrusted model output.
+    """
+    if not api_key:
+        raise LunaAPIError("Luna n'est pas connectée : renseignez la clé du service d'IA.")
+    if len(html) > MAX_PAGE_HTML:
+        raise LunaAPIError("La page actuelle est trop longue pour être modifiée.")
+    safe_identity = _safe_identity(identity)
+    screenshot = _validate_screenshot(screenshot_data_url)
+    attachments = [_validate_screenshot(image) for image in (images or [])[:3]]
+    names = [name for name in (existing_names or []) if name not in {"consent", "sillage_consent"} and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", name)][:40]
+    correction = ""
+    started = time.monotonic()
+    for attempt in (1, 2):
+        request = _page_request(
+            html=html, instruction=instruction, identity=safe_identity, selection=selection,
+            history=history or [], brief=brief, stats=stats, existing_names=names,
+            screenshot=screenshot, images=[image for image in attachments if image],
+            model=model, correction=correction, include_images=attempt == 1,
+        )
+        response = _request_openai(request, api_key=api_key, timeout_seconds=timeout_seconds, transport=transport)
+        try:
+            result = LunaPage.model_validate_json(_output_text(response))
+            _validate_page_result(result)
+            if not html and result.region is not None:
+                raise ValueError("La première génération doit contenir une page HTML complète.")
+            selected_region = selection.get("region")
+            if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
+                raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
+        except (ValidationError, ValueError) as exc:
+            correction = str(exc)
+            logger.warning("Luna page refused (attempt %s): %s", attempt, correction[:200])
+            if attempt == 2:
+                raise LunaAPIError(f"Luna n'a pas pu produire une page valide : {correction}") from exc
+            continue
+        logger.info("Luna page produced in %.1fs, attempt %s, %s tokens", time.monotonic() - started, attempt, (response.get("usage") or {}).get("total_tokens", "?"))
+        return result.model_dump()
+    raise LunaAPIError("Luna n'a pas pu produire une page valide.")
+
+
+def _partial_json_string(raw: str, key: str) -> str:
+    """Decode the completed prefix of a JSON string while it is streamed."""
+    match = re.search(rf'(?<!\\)"{re.escape(key)}"\s*:\s*"', raw)
+    if not match:
+        return ""
+    encoded = raw[match.end():]
+    index = 0
+    while index < len(encoded):
+        char = encoded[index]
+        if char == '"':
+            break
+        if char == "\\":
+            if index + 1 >= len(encoded):
+                break
+            if encoded[index + 1] == "u":
+                if index + 5 >= len(encoded) or not re.fullmatch(r"[0-9a-fA-F]{4}", encoded[index + 2:index + 6]):
+                    break
+                index += 6
+                continue
+            if encoded[index + 1] not in '"\\/bfnrt':
+                break
+            index += 2
+            continue
+        index += 1
+    try:
+        return json.loads('"' + encoded[:index] + '"')
+    except json.JSONDecodeError:
+        return ""
+
+
+def _partial_region(raw: str) -> str | None:
+    match = re.search(r'(?<!\\)"region"\s*:\s*(null|"[a-zA-Z][\w-]{0,63}")', raw)
+    return json.loads(match.group(1)) if match else None
+
+
+def stream_page_revision(
+    html: str,
+    instruction: str,
+    identity: str | dict,
+    *,
+    selection: dict,
+    history: list[dict] | None = None,
+    brief: dict | str | None = None,
+    stats: dict | None = None,
+    existing_names: list[str] | None = None,
+    screenshot_data_url: str | None = None,
+    images: list[str] | None = None,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 90.0,
+    transport: httpx.BaseTransport | None = None,
+):
+    """Yield provisional HTML as Responses streams, then a validated final result.
+
+    Preview HTML is untrusted and must only be shown inside the scriptless page
+    iframe. The final event still needs API-side merge and sanitization.
+    """
+    if not api_key:
+        raise LunaAPIError("Luna n'est pas connectée : renseignez la clé du service d'IA.")
+    if len(html) > MAX_PAGE_HTML:
+        raise LunaAPIError("La page actuelle est trop longue pour être modifiée.")
+    safe_identity = _safe_identity(identity)
+    screenshot = _validate_screenshot(screenshot_data_url)
+    attachments = [_validate_screenshot(image) for image in (images or [])[:3]]
+    names = [name for name in (existing_names or []) if name not in {"consent", "sillage_consent"} and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", name)][:40]
+    correction = ""
+    for attempt in (1, 2):
+        request = _page_request(
+            html=html, instruction=instruction, identity=safe_identity, selection=selection,
+            history=history or [], brief=brief, stats=stats, existing_names=names,
+            screenshot=screenshot, images=[image for image in attachments if image],
+            model=model, correction=correction, include_images=attempt == 1,
+        )
+        request["stream"] = True
+        raw = ""
+        completed = None
+        last_preview_length = 0
+        try:
+            with httpx.Client(timeout=timeout_seconds, transport=transport) as client:
+                with client.stream(
+                    "POST", "https://api.openai.com/v1/responses",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=request,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        event = json.loads(data)
+                        kind = event.get("type")
+                        if kind == "response.output_text.delta":
+                            raw += event.get("delta") or ""
+                            preview = _partial_json_string(raw, "html")
+                            if len(preview) > last_preview_length and (last_preview_length == 0 or len(preview) - last_preview_length >= 256):
+                                last_preview_length = len(preview)
+                                yield {"type": "preview", "html": preview, "region": _partial_region(raw)}
+                        elif kind == "response.completed":
+                            completed = event.get("response")
+                        elif kind in {"response.failed", "error"}:
+                            raise LunaAPIError("Luna est temporairement indisponible côté OpenAI.")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                raise LunaAPIError("La clé OpenAI de Luna est invalide.") from exc
+            if exc.response.status_code == 429:
+                raise LunaAPIError("Luna a atteint sa limite OpenAI. Réessayez dans un instant.") from exc
+            raise LunaAPIError("Luna est temporairement indisponible côté OpenAI.") from exc
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            raise LunaAPIError("Luna est temporairement indisponible côté OpenAI.") from exc
+        try:
+            output = raw or _output_text(completed or {})
+            result = LunaPage.model_validate_json(output)
+            _validate_page_result(result)
+            if not html and result.region is not None:
+                raise ValueError("La première génération doit contenir une page HTML complète.")
+            selected_region = selection.get("region")
+            if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
+                raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
+        except (ValidationError, ValueError, LunaAPIError) as exc:
+            correction = str(exc)
+            if attempt == 2:
+                raise LunaAPIError(f"Luna n'a pas pu produire une page valide : {correction}") from exc
+            yield {"type": "reset"}
+            continue
+        yield {"type": "final", **result.model_dump()}
+        return
+
+
+def generate_page(
+    prompt: str,
+    identity: str | dict,
+    *,
+    context: str = "",
+    images: list[str] | None = None,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Generate the first free HTML/CSS page from a campaign brief."""
+    result = revise_page(
+        "", f"Crée une page de formulaire complète pour ce besoin : {prompt}", identity,
+        selection={"view": "form", "element_ids": [], "label": "Nouvelle page"},
+        brief={"prompt": prompt, "context": context}, images=images,
+        api_key=api_key, model=model, timeout_seconds=timeout_seconds, transport=transport,
+    )
+    if result["region"] is not None:
+        raise LunaAPIError("Luna doit créer une page complète lors de la première génération.")
+    return result
 
 
 def generate_campaign(

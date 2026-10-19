@@ -25,7 +25,7 @@ services:
       CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
-      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-30}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-90}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

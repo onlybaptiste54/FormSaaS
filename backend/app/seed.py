@@ -5,7 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .luna import generate_campaign
-from .models import Campaign, Company, Form, FormResponse, User
+from .models import Campaign, Company, Form, FormResponse, Page, Tunnel, User, initial_tunnel_id, thanks_page_id
+from .page_document import legacy_to_html, prepare_page
 from .security import hash_password
 
 
@@ -54,6 +55,29 @@ def seed(db: Session):
             form = Form(campaign_id=campaign.id, creator_id=user.id, name=name, slug=generated["slug"], description=generated["description"], kind=kind, status=status, visibility="team" if position == 0 else "private", fields=generated["fields"], design=generated["design"], thank_you=generated["thank_you"], visits=visits, created_at=datetime.now(timezone.utc) - timedelta(days=38 - position * 9))
             db.add(form)
             db.flush()
+            tunnel_id = initial_tunnel_id(form.id)
+            tunnel = Tunnel(id=tunnel_id, campaign_id=campaign.id, name=form.name,
+                            slug=form.slug, status=form.status)
+            db.add(tunnel)
+            db.flush()
+            form_state = {
+                "name": form.name, "description": form.description, "kind": form.kind,
+                "fields": form.fields, "design": form.design, "content": form.content or {},
+                "thank_you": form.thank_you,
+            }
+            company_state = {column.name: getattr(company, column.name) for column in Company.__table__.columns}
+            form_html, manifest = prepare_page(legacy_to_html(form_state, company_state), require_form=True)
+            thanks_html, thanks_manifest = prepare_page(
+                legacy_to_html(form_state, company_state, role="thanks"), require_form=False
+            )
+            thanks_id = thanks_page_id(form.id)
+            db.add(Page(id=thanks_id, form_id=form.id, tunnel_id=tunnel_id, slug=None, role="thanks", position=1,
+                        html=thanks_html, manifest=thanks_manifest, visits=count))
+            db.flush()
+            db.add(Page(id=form.id, form_id=form.id, tunnel_id=tunnel_id, slug=form.slug, role="form", position=0,
+                        next_page_id=thanks_id, html=form_html, manifest=manifest,
+                        visits=visits, conversions=count))
+            tunnel.entry_page_id = form.id
             for n in range(count):
                 answers = {"name": ["Léa Bernard", "Thomas Petit", "Inès Robert", "Hugo Leroy"][n % 4], "email": f"contact{n + 1}@exemple.fr"}
                 if kind == "survey":

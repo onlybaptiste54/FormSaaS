@@ -1,108 +1,175 @@
 "use client";
 
-import { FormEvent, use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
-import { FormRenderer, FormStage } from "@/components/form-renderer";
-import { api } from "@/lib/api";
-import type { Field, FormContent, FormDesign } from "@/lib/types";
+import { PageFrame } from "@/components/page-frame";
+import { API_URL } from "@/lib/api";
+import type { PageField } from "@/lib/types";
+
+type TunnelPage = {
+  id: string;
+  role: "landing" | "form" | "thanks" | "step" | "custom";
+  position: number;
+  next_page_id: string | null;
+  visits: number;
+  conversions: number;
+};
 
 type PublicCampaign = {
   name: string;
-  description: string;
-  fields: Field[];
-  design: FormDesign;
-  content: FormContent;
   thank_you: Record<string, string>;
+  html: string;
+  thanks_html: string;
+  manifest: PageField[];
   status: string;
-  company: { name: string; legal_name: string; address: string; primary_color: string; accent_color: string; dpo_email: string; logo: string };
+  tunnel?: { id: string; entry_page_id: string; pages: TunnelPage[] };
 };
+
+type JourneyPage = {
+  page_id: string | null;
+  html: string;
+  manifest: PageField[];
+  next_page_id: string | null;
+};
+
+type JourneyResponse = Omit<JourneyPage, "page_id"> & { page_id: string };
+
+async function publicApi<T>(path: string, body?: object): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: body ? "POST" : "GET",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const detail = payload.detail;
+    throw new Error(typeof detail === "string" ? detail : "Cette étape est indisponible.");
+  }
+  return response.json();
+}
 
 export default function PublicForm({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
   const [campaign, setCampaign] = useState<PublicCampaign | null>(null);
-  const [answers, setAnswers] = useState<Record<string, string | number>>({});
-  const [consent, setConsent] = useState(false);
-  const [invalid, setInvalid] = useState<Record<string, string>>({});
+  const [currentPage, setCurrentPage] = useState<JourneyPage | null>(null);
   const [busy, setBusy] = useState(false);
+  const [journeyReady, setJourneyReady] = useState(false);
+  const [preview, setPreview] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const submitting = useRef(false);
 
   useEffect(() => {
-    api<PublicCampaign>(`/public/${slug}`).then(setCampaign).catch(err => setError(err.message));
+    let cancelled = false;
+    setJourneyReady(false);
+    const isPreview = new URLSearchParams(location.search).get("preview") === "1";
+    setPreview(isPreview);
+    publicApi<PublicCampaign>(`/public/${slug}`)
+      .then(async data => {
+        if (cancelled) return;
+        const entryId = data.tunnel?.entry_page_id ?? null;
+        const entry = data.tunnel?.pages.find(page => page.id === entryId);
+        setCampaign(data);
+        setCurrentPage({ page_id: entryId, html: data.html, manifest: data.manifest, next_page_id: entry?.next_page_id ?? null });
+        if (data.status !== "active" || isPreview) return;
+        try {
+          const visited = await publicApi<JourneyResponse>(`/public/${slug}/visit`, { page_id: entryId });
+          if (!cancelled) {
+            setCurrentPage(visited);
+            setJourneyReady(true);
+          }
+        } catch (err) {
+          if (!cancelled) setError(err instanceof Error ? err.message : "Cette étape est indisponible.");
+        }
+      })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Formulaire indisponible."); });
+    return () => { cancelled = true; };
   }, [slug]);
 
-  // Une visite par session et par formulaire : un rechargement ou un apercu
-  // interne ne doit pas gonfler la conversion.
-  useEffect(() => {
-    if (!campaign || campaign.status !== "active") return;
-    if (new URLSearchParams(location.search).get("preview") === "1") return;
-    const key = `sillage-visit-${slug}`;
-    try {
-      if (sessionStorage.getItem(key)) return;
-      sessionStorage.setItem(key, "1");
-    } catch {
-      // Stockage indisponible : on compte la visite, sans dedoublonnage.
-    }
-    void api(`/public/${slug}/visit`, { method: "POST" }).catch(() => undefined);
-  }, [campaign, slug]);
-
-  // Redirection automatique configuree dans le tunnel, avec lien de secours.
+  // La redirection choisie dans le tunnel garde son délai et son lien de secours.
   useEffect(() => {
     if (!done || campaign?.thank_you.action !== "redirect" || !campaign.thank_you.button_url) return;
     const timer = setTimeout(() => { location.href = campaign.thank_you.button_url; }, 3000);
     return () => clearTimeout(timer);
   }, [done, campaign]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!campaign) return;
-    const errors: Record<string, string> = {};
-    for (const field of campaign.fields) {
-      if (field.type === "consent" || !field.required) continue;
-      if (answers[field.id] === undefined || answers[field.id] === "") errors[field.id] = "Ce champ est requis";
-    }
-    setInvalid(errors);
-    if (Object.keys(errors).length) {
-      document.querySelector(`[data-field="${Object.keys(errors)[0]}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-      return;
-    }
+  async function advance() {
+    if (!campaign || !currentPage?.page_id || !currentPage.next_page_id || !journeyReady || busy || submitting.current || campaign.status !== "active") return;
     setBusy(true);
     setError("");
-    const query = new URLSearchParams(location.search);
     try {
-      await api(`/public/${slug}/submit`, {
-        method: "POST",
-        body: JSON.stringify({ answers, consent, source: query.get("source") || "Lien direct", promo_code: query.get("promo") || "" }),
-      });
-      setDone(true);
+      const page = await publicApi<JourneyResponse>(`/public/${slug}/advance`, { from_page_id: currentPage.page_id });
+      setCurrentPage(page);
+      setDone(false);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Envoi impossible");
+      setError(err instanceof Error ? err.message : "Impossible d’ouvrir cette étape.");
+    } finally {
       setBusy(false);
     }
   }
 
-  if (error && !campaign) return <main className="public-form-page"><div className="public-card"><h1>Formulaire indisponible</h1><p>{error}</p></div></main>;
-  if (!campaign) return <main className="public-form-page"><LoaderCircle className="spin"/></main>;
+  async function submitAnswers(answersToSend: Record<string, string | number>, consentToSend: boolean) {
+    if (!campaign || !currentPage) return;
+    for (const field of currentPage.manifest) {
+      if (field.type === "consent" || !field.required) continue;
+      if (answersToSend[field.name] === undefined || answersToSend[field.name] === "") {
+        setError(`Le champ « ${field.label} » est requis.`);
+        return;
+      }
+    }
+    if (submitting.current) return;
+    submitting.current = true;
+    setBusy(true);
+    setError("");
+    const query = new URLSearchParams(location.search);
+    try {
+      const submitted = await publicApi<{ next_page_id: string | null; thanks_html: string; html: string; manifest: PageField[]; journey_token: string }>(`/public/${slug}/submit`, {
+        page_id: currentPage.page_id,
+        answers: answersToSend,
+        consent: consentToSend,
+        source: query.get("source") || "Lien direct",
+        promo_code: query.get("promo") || "",
+      });
+      const next = campaign.tunnel?.pages.find(page => page.id === submitted.next_page_id);
+      setCurrentPage({ page_id: submitted.next_page_id, html: submitted.html || submitted.thanks_html, manifest: submitted.manifest, next_page_id: next?.next_page_id ?? null });
+      setDone(!next || next.role === "thanks");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Envoi impossible");
+    } finally {
+      setBusy(false);
+      submitting.current = false;
+    }
+  }
 
-  return <FormStage as="main" design={campaign.design} className="public-form-page" style={{ "--client": campaign.company.primary_color, "--client-accent": campaign.company.accent_color } as React.CSSProperties}>
+  function submitDocument(form: HTMLFormElement, data: FormData) {
+    if (!campaign || !currentPage || campaign.status !== "active" || !journeyReady || busy) return;
+    const consentField = form.querySelector<HTMLInputElement>('[data-sillage="consent"] input[type="checkbox"]');
+    const values: Record<string, string | number> = {};
+    for (const [name, value] of data.entries()) {
+      if (name && typeof value === "string" && name !== "consent" && name !== consentField?.name) values[name] = value;
+    }
+    const accepted = consentField?.checked ?? data.get("consent") === "on";
+    void submitAnswers(values, accepted);
+  }
+
+  if (error && !campaign) return <main className="public-form-page"><div className="public-error-card"><h1>Formulaire indisponible</h1><p>{error}</p></div></main>;
+  if (!campaign || !currentPage) return <main className="public-form-page"><LoaderCircle className="spin"/></main>;
+
+  return <main className="public-document-page">
     {campaign.status !== "active" && <div className="public-draft-banner">Aperçu d’un brouillon : ce formulaire n’accepte pas encore de réponse.</div>}
-    {done ? (
-      <FormRenderer form={campaign} company={campaign.company} mode="public" view="thanks" values={answers}/>
-    ) : (
-      <FormRenderer
-        form={campaign}
-        company={campaign.company}
-        mode="public"
-        values={answers}
-        consent={consent}
-        errors={invalid}
-        busy={busy || campaign.status !== "active"}
-        error={error}
-        onChange={(id, value) => { setAnswers({ ...answers, [id]: value }); setInvalid(({ [id]: _removed, ...rest }) => rest); }}
-        onConsent={setConsent}
-        onSubmit={submit}
-      />
-    )}
-  </FormStage>;
+    <PageFrame
+      html={currentPage.html}
+      title={`${campaign.name}${done ? " — Merci" : ""}`}
+      mode="public"
+      onSubmit={submitDocument}
+      onNext={advance}
+    />
+    {busy && <p className="public-document-status">{submitting.current ? "Envoi en cours…" : "Ouverture de l’étape…"}</p>}
+    {campaign.status === "active" && !preview && !journeyReady && !error && <p className="public-document-status">Préparation du parcours…</p>}
+    {error && <p className="public-document-status form-error" role="alert">{error}</p>}
+  </main>;
 }

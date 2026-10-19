@@ -2,21 +2,26 @@ import csv
 import io
 import json
 import logging
+from html import escape
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+import jwt
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Text, cast, desc, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, revise_campaign, slugify
+from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
-from .models import Campaign, Company, Form, FormResponse, FormVersion, Template, User
-from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, SubmitResponse, TemplateUse
+from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
+from .page_document import legacy_to_html, prepare_page, render_page
+from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import create_token, current_user, verify_password
 from .seed import seed
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
@@ -59,8 +64,91 @@ def editing_state(f: Form) -> dict:
     return {**published_state(f), **(f.draft or {})}
 
 
-def record_version(db: Session, form: Form, snapshot: dict, *, source: str, instruction: str = "", message: str = "") -> FormVersion:
-    version = FormVersion(form_id=form.id, snapshot=snapshot, source=source, instruction=instruction, message=message)
+def form_page(form: Form, role: str = "form") -> Page:
+    return next(page for page in form.pages if page.role == role)
+
+
+def converted_html(form: Form, state: dict, *, role: str = "form") -> tuple[str, list[dict]]:
+    company = form.campaign.company
+    identity = {key: getattr(company, key) for key in ("name", "legal_name", "address", "dpo_email", "logo")}
+    return prepare_page(legacy_to_html({**state, "kind": form.kind}, identity, role=role), require_form=role == "form")
+
+
+def create_form_pages(db: Session, form: Form, initial_html: tuple[str, list[dict]] | None = None) -> None:
+    """Initialise les deux documents des nouveaux formulaires, dans la transaction courante."""
+    db.flush()
+    tunnel_id = initial_tunnel_id(form.id)
+    tunnel = Tunnel(id=tunnel_id, campaign_id=form.campaign_id, name=form.name,
+                    slug=form.slug, status=form.status)
+    db.add(tunnel)
+    db.flush()
+    state = published_state(form)
+    html, manifest = initial_html if initial_html is not None else converted_html(form, state)
+    thanks_html, _ = converted_html(form, state, role="thanks")
+    thanks = Page(id=thanks_page_id(form.id), form_id=form.id, tunnel_id=tunnel_id, role="thanks", position=1, html=thanks_html)
+    db.add(thanks)
+    db.flush()
+    db.add(Page(id=form.id, form_id=form.id, tunnel_id=tunnel_id, slug=form.slug, role="form", position=0,
+                next_page_id=thanks.id, html=html, manifest=manifest, visits=form.visits))
+    tunnel.entry_page_id = form.id
+
+
+def copy_form_pages(db: Session, source: Form, target: Form) -> None:
+    """Duplicate the published tunnel while resetting its measurements."""
+    db.flush()
+    tunnel_id = initial_tunnel_id(target.id)
+    tunnel = Tunnel(id=tunnel_id, campaign_id=target.campaign_id, name=target.name,
+                    slug=target.slug, status=target.status)
+    db.add(tunnel)
+    db.flush()
+    source_tunnel = db.get(Tunnel, initial_tunnel_id(source.id))
+    source_pages = sorted(source_tunnel.pages, key=lambda item: item.position)
+    mapped = {page.id: target.id if page.id == source.id else thanks_page_id(target.id)
+              if page.id == thanks_page_id(source.id) else uid() for page in source_pages}
+    for old in source_pages:
+        html, manifest = prepare_page(old.html, require_form=old.role == "form")
+        db.add(Page(id=mapped[old.id], form_id=target.id if old.form_id == source.id else None,
+                    tunnel_id=tunnel_id, slug=target.slug if old.id == source.id else None,
+                    role=old.role, position=old.position, html=html, manifest=manifest))
+    db.flush()
+    for old in source_pages:
+        if old.next_page_id:
+            db.get(Page, mapped[old.id]).next_page_id = mapped[old.next_page_id]
+    tunnel.entry_page_id = mapped[source_tunnel.entry_page_id]
+
+
+def consent_text(form: Form) -> str:
+    label = next(
+        (str(field.get("label", "")).strip() for field in form.fields
+         if field.get("type") == "consent" and str(field.get("label", "")).strip()),
+        "",
+    )
+    return label or "J'accepte le traitement de mes données pour répondre à ma demande."
+
+
+def field_warnings(db: Session, form: Form, page: Page) -> list[str]:
+    """Signale les anciens noms encore présents dans des réponses conservées."""
+    if page.draft_manifest is None:
+        return []
+    current = {field["name"] for field in page.draft_manifest}
+    warnings = []
+    for field in page.manifest:
+        name = field["name"]
+        if name in current:
+            continue
+        if db.get_bind().dialect.name == "postgresql":
+            present = cast(FormResponse.answers, JSONB).has_key(name)
+        else:
+            present = func.json_type(FormResponse.answers, f'$."{name}"').is_not(None)
+        count = db.scalar(select(func.count(FormResponse.id)).where(FormResponse.form_id == form.id, present)) or 0
+        if count:
+            warnings.append(f"{count} réponses étaient rattachées à « {name} » ; elles restent consultables dans l'historique.")
+    return warnings
+
+
+def record_version(db: Session, form: Form, snapshot: dict, *, source: str, instruction: str = "", message: str = "", screenshot_data_url: str | None = None, images: list[str] | None = None) -> FormVersion:
+    version = FormVersion(form_id=form.id, snapshot=snapshot, source=source, instruction=instruction,
+                          message=message, screenshot_data_url=screenshot_data_url, images=images or [])
     db.add(version)
     db.flush()
     extra = db.scalars(
@@ -72,7 +160,17 @@ def record_version(db: Session, form: Form, snapshot: dict, *, source: str, inst
 
 
 def version_json(version: FormVersion):
-    return {"id": version.id, "source": version.source, "instruction": version.instruction, "message": version.message, "created_at": version.created_at.isoformat()}
+    return {
+        "id": version.id,
+        "source": version.source,
+        "instruction": version.instruction,
+        "message": version.message,
+        "created_at": version.created_at.isoformat(),
+        "screenshot_data_url": getattr(version, "screenshot_data_url", None),
+        "images": getattr(version, "images", None) or [],
+        "restored_to_version_id": (version.snapshot or {}).get("_restored_to_version_id"),
+        "page_id": (version.snapshot or {}).get("page_id"),
+    }
 
 
 def form_health(f: Form, company: Company) -> dict:
@@ -100,6 +198,9 @@ def count_responses(db: Session, form_id: str) -> int:
 
 def form_json(db: Session, f: Form):
     responses = count_responses(db, f.id)
+    page = form_page(f)
+    thanks = form_page(f, "thanks")
+    legal = consent_text(f)
     return {
         "id": f.id,
         "campaign_id": f.campaign_id,
@@ -115,6 +216,11 @@ def form_json(db: Session, f: Form):
         "content": f.content or default_content(f.kind),
         "thank_you": f.thank_you,
         "draft": f.draft,
+        "html": render_page(page.html, legal),
+        "draft_html": render_page(page.draft_html, legal) if page.draft_html else None,
+        "thanks_html": render_page(thanks.draft_html or thanks.html, legal, {}),
+        "manifest": page.manifest,
+        "field_warnings": field_warnings(db, f, page),
         "health": form_health(f, f.campaign.company),
         "visits": f.visits,
         "responses": responses,
@@ -187,8 +293,17 @@ def one_campaign_json(db: Session, c: Campaign):
     return campaign_json(c, campaign_summaries(db, [c])[c.id])
 
 
-def saved_template_json(template: Template):
-    return {
+def template_preview(payload: dict, company: Company) -> dict:
+    """Même document pour les vignettes et le formulaire créé depuis un modèle."""
+    fields = campaign_fields(payload["fields"], company.name)
+    state = {**payload, "fields": fields}
+    identity = {key: getattr(company, key) for key in ("name", "legal_name", "address", "dpo_email", "logo")}
+    html, _ = prepare_page(legacy_to_html(state, identity), require_form=True)
+    return {**payload, "html": render_page(html, fields[-1]["label"])}
+
+
+def saved_template_json(template: Template, company: Company | None = None):
+    payload = {
         "id": template.id,
         "key": template.source_key,
         "name": template.name,
@@ -203,6 +318,7 @@ def saved_template_json(template: Template):
         "created_at": template.created_at.isoformat(),
         "updated_at": template.updated_at.isoformat(),
     }
+    return template_preview(payload, company) if company else payload
 
 
 def unique_slug(db: Session, name: str) -> str:
@@ -237,10 +353,11 @@ def form_from_template(db: Session, template: dict, user: User, campaign: Campai
 def luna_history(form: Form) -> list[dict]:
     """Derniers echanges, pour que Luna se souvienne de la conversation."""
     turns = []
-    for version in form.versions[-6:]:
+    for version in [item for item in form.versions if item.source == "luna"][-6:]:
         if version.instruction:
-            turns.append({"role": "user", "text": version.instruction})
-        if version.message and version.source == "luna":
+            images = [image for image in [getattr(version, "screenshot_data_url", None), *(getattr(version, "images", None) or [])] if image]
+            turns.append({"role": "user", "text": version.instruction, "images": images})
+        if version.message:
             turns.append({"role": "luna", "text": version.message})
     return turns
 
@@ -453,17 +570,31 @@ def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db
         identity = luna_identity(user.company)
         if not data.use_brand:
             identity = {**identity, "brand": {}}
+        # Les anciennes colonnes restent disponibles pendant la migration, mais
+        # une seule génération IA écrit désormais le document visible.
         generated = generate_campaign(
             data.prompt,
             identity,
             context=data.context,
             images=data.images,
-            api_key=settings.openai_api_key,
+            api_key="",
             model=settings.openai_model,
             timeout_seconds=settings.openai_timeout_seconds,
         )
+        initial_html = None
+        if settings.openai_api_key:
+            page_result = generate_page(
+                data.prompt, identity, context=data.context, images=data.images,
+                api_key=settings.openai_api_key, model=settings.openai_model,
+                timeout_seconds=settings.openai_timeout_seconds,
+            )
+            initial_html = prepare_page(page_result["html"], require_form=True)
+            consent = next(field for field in generated["fields"] if field.get("type") == "consent")
+            generated["fields"] = [*initial_html[1], consent]
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     # Le nom et la description saisis par l'utilisateur priment sur ceux de Luna.
     if data.name.strip():
         generated["name"] = data.name.strip()
@@ -472,6 +603,7 @@ def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db
     generated["slug"] = unique_slug(db, generated["name"])
     form = Form(campaign_id=campaign.id, creator_id=user.id, brief={"prompt": data.prompt, "context": data.context}, **generated)
     db.add(form)
+    create_form_pages(db, form, initial_html)
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -485,51 +617,251 @@ def get_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(c
 @app.patch("/api/forms/{form_id}")
 def update_form(form_id: str, data: FormUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     form = owned_form(form_id, db, user)
-    for key, value in data.model_dump(exclude_none=True).items():
+    changes = data.model_dump(exclude_none=True)
+    previous = published_state(form)
+    page = form_page(form)
+    thanks = form_page(form, "thanks")
+    update_legacy_form = bool({"name", "description", "fields", "design"} & changes.keys()) and page.html == converted_html(form, previous)[0]
+    update_legacy_thanks = "thank_you" in changes and thanks.html == converted_html(form, previous, role="thanks")[0]
+    for key, value in changes.items():
         setattr(form, key, value)
+    if "status" in changes:
+        tunnel = db.get(Tunnel, initial_tunnel_id(form.id))
+        if tunnel:
+            tunnel.status = form.status
+    if update_legacy_form:
+        page.html, page.manifest = converted_html(form, published_state(form))
+    if update_legacy_thanks:
+        thanks.html, thanks.manifest = converted_html(form, published_state(form), role="thanks")
     db.commit()
     return form_json(db, form)
+
+
+def form_tunnel(db: Session, form: Form) -> Tunnel:
+    tunnel = db.get(Tunnel, initial_tunnel_id(form.id))
+    if not tunnel or tunnel.campaign_id != form.campaign_id:
+        raise HTTPException(404, "Tunnel introuvable")
+    return tunnel
+
+
+def tunnel_json(tunnel: Tunnel, form: Form) -> dict:
+    pages = sorted(tunnel.pages, key=lambda item: (item.position, item.created_at, item.id))
+    return {
+        "id": tunnel.id, "name": tunnel.name, "status": tunnel.status,
+        "entry_page_id": tunnel.entry_page_id,
+        "pages": [{
+            "id": page.id, "role": page.role, "position": page.position,
+            "slug": page.slug, "next_page_id": page.next_page_id,
+            "html": render_page(page.draft_html or page.html, consent_text(form)),
+            "visits": page.visits, "conversions": page.conversions,
+        } for page in pages],
+    }
+
+
+@app.get("/api/forms/{form_id}/tunnel")
+def get_form_tunnel(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    form = owned_form(form_id, db, user)
+    return tunnel_json(form_tunnel(db, form), form)
+
+
+@app.post("/api/forms/{form_id}/tunnel/pages", status_code=201)
+def create_tunnel_page(form_id: str, data: TunnelPageCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    form = owned_form(form_id, db, user)
+    tunnel = form_tunnel(db, form)
+    pages = sorted(tunnel.pages, key=lambda item: item.position)
+    if len(pages) >= 20:
+        raise HTTPException(422, "Le tunnel est limité à 20 pages")
+    if data.role == "landing":
+        title = data.name.strip() or "Bienvenue"
+        html = f'<main><h1>{escape(title)}</h1><p>Découvrez notre proposition.</p><button data-sillage-next="" type="button">Continuer</button></main>'
+        next_page_id = tunnel.entry_page_id
+        position = 0
+        for page in pages:
+            page.position += 1
+    else:
+        html = form_page(form).html
+        thanks = next((page for page in pages if page.role == "thanks"), None)
+        next_page_id = thanks.id if thanks else None
+        position = thanks.position if thanks else max((page.position for page in pages), default=-1) + 1
+        for item in pages:
+            if item.position >= position:
+                item.position += 1
+    cleaned, manifest = prepare_page(html, require_form=data.role == "form")
+    page = Page(tunnel_id=tunnel.id, role=data.role, position=position,
+                next_page_id=next_page_id, html=cleaned, manifest=manifest)
+    db.add(page)
+    db.flush()
+    if data.role == "landing":
+        tunnel.entry_page_id = page.id
+    else:
+        predecessor = next((item for item in pages if item.next_page_id == next_page_id and item.id != page.id), None)
+        if predecessor:
+            predecessor.next_page_id = page.id
+    db.commit()
+    db.refresh(tunnel)
+    return tunnel_json(tunnel, form)
+
+
+@app.patch("/api/forms/{form_id}/tunnel/pages/{page_id}")
+def update_tunnel_page(form_id: str, page_id: str, data: TunnelPageUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    form = owned_form(form_id, db, user)
+    tunnel = form_tunnel(db, form)
+    page = next((item for item in tunnel.pages if item.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page introuvable")
+    changes = data.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(422, "Aucune modification transmise")
+    if "next_page_id" in changes:
+        target_id = changes["next_page_id"]
+        if target_id is not None and target_id not in {item.id for item in tunnel.pages if item.id != page.id}:
+            raise HTTPException(422, "La page suivante doit appartenir au même tunnel")
+        if target_id and page.role != "form" and next(item for item in tunnel.pages if item.id == target_id).role == "thanks":
+            raise HTTPException(422, "Le remerciement suit une soumission de formulaire")
+        cursor = target_id
+        seen = {page.id}
+        lookup = {item.id: item for item in tunnel.pages}
+        while cursor:
+            if cursor in seen:
+                raise HTTPException(422, "Le parcours ne peut pas former une boucle")
+            seen.add(cursor)
+            cursor = lookup[cursor].next_page_id
+        page.next_page_id = target_id
+    if "position" in changes and changes["position"] is not None:
+        ordered = sorted((item for item in tunnel.pages if item.id != page.id), key=lambda item: item.position)
+        ordered.insert(min(changes["position"], len(ordered)), page)
+        if ordered[0].role == "thanks":
+            raise HTTPException(422, "Le remerciement ne peut pas être la première page")
+        for index, item in enumerate(ordered):
+            item.position = index
+        tunnel.entry_page_id = ordered[0].id
+    db.commit()
+    db.refresh(tunnel)
+    return tunnel_json(tunnel, form)
+
+
+def revision_page(db: Session, form: Form, data: LunaRefineRequest) -> Page:
+    if not data.page_id:
+        return form_page(form, data.view)
+    page = db.get(Page, data.page_id)
+    if not page or page.tunnel_id != form_tunnel(db, form).id:
+        raise HTTPException(404, "Page introuvable")
+    return page
+
+
+def page_revision_context(db: Session, form: Form, data: LunaRefineRequest) -> tuple[str, dict]:
+    page = revision_page(db, form, data)
+    current_html = page.draft_html or page.html
+    selection = {
+        "element_ids": data.element_ids,
+        "label": data.selection_label,
+        "view": data.view,
+        "page_role": page.role,
+        "region": data.region,
+        "rect": data.selection_rect.model_dump() if data.selection_rect else None,
+    }
+    return current_html, {
+        "selection": selection,
+        "history": luna_history(form),
+        "brief": form.brief or {},
+        "stats": {"visits": page.visits, "conversions": page.conversions, "responses": count_responses(db, form.id)},
+        "existing_names": [field["name"] for field in (page.draft_manifest if page.draft_html is not None else page.manifest) or []],
+        "screenshot_data_url": data.screenshot_data_url,
+        "images": data.images,
+        "api_key": settings.openai_api_key,
+        "model": settings.openai_model,
+        "timeout_seconds": settings.openai_timeout_seconds,
+    }
+
+
+def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revision: dict, expected_html: str) -> dict:
+    page = revision_page(db, form, data)
+    db.refresh(page)
+    if (page.draft_html or page.html) != expected_html:
+        raise ValueError("La page a changé pendant la génération. Rechargez l'éditeur avant de réessayer.")
+    try:
+        candidate = merge_page_region(expected_html, revision["html"], revision.get("region"))
+        cleaned_html, manifest = prepare_page(candidate, require_form=page.role == "form")
+    except ValueError:
+        db.rollback()
+        raise
+
+    if not any((version.snapshot or {}).get("page_id") == page.id for version in form.versions):
+        record_version(db, form, {**published_state(form), "html": form_page(form).html,
+                                  "thanks_html": form_page(form, "thanks").html,
+                                  "page_id": page.id, "page_html": expected_html},
+                       source="initial", message="Version publiée")
+    form.draft = form.draft or published_state(form)
+    page.draft_html, page.draft_manifest = cleaned_html, manifest
+    thanks = form_page(form, "thanks")
+    form_document = form_page(form)
+    version = record_version(
+        db, form,
+        {**form.draft, "html": form_document.draft_html or form_document.html, "thanks_html": thanks.draft_html or thanks.html,
+         "page_id": page.id, "page_html": cleaned_html},
+        source="luna", instruction=data.instruction, message=revision["message"],
+        screenshot_data_url=data.screenshot_data_url, images=data.images,
+    )
+    db.commit()
+    db.refresh(form)
+    return {
+        "message": revision["message"],
+        "form": form_json(db, form),
+        "version": version_json(version),
+        "touched": [revision["region"]] if revision.get("region") else [],
+    }
 
 
 @app.post("/api/forms/{form_id}/luna/refine")
 def refine_with_luna(form_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if not settings.openai_api_key:
-        raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier le design avec Luna.")
+        raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier la page avec Luna.")
     form = owned_form(form_id, db, user)
-    state = editing_state(form)
+    current_html, context = page_revision_context(db, form, data)
     try:
-        revision = revise_campaign(
-            {**state, "kind": form.kind, "brief": form.brief or {}},
-            data.instruction,
-            luna_identity(user.company),
-            selection={
-                "element_ids": data.element_ids,
-                "label": data.selection_label,
-                "view": data.view,
-            },
-            history=luna_history(form),
-            screenshot_data_url=data.screenshot_data_url,
-            images=data.images,
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            timeout_seconds=settings.openai_timeout_seconds,
-        )
+        revision = revise_page(current_html, data.instruction, luna_identity(user.company), **context)
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
+    try:
+        return save_page_revision(db, form, data, revision, current_html)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
-    if form.draft is None and not form.versions:
-        record_version(db, form, published_state(form), source="initial", message="Version publiée")
-    form.draft = {key: revision[key] for key in EDITABLE_KEYS}
-    version = record_version(db, form, form.draft, source="luna", instruction=data.instruction, message=revision["assistant_message"])
-    db.commit()
-    db.refresh(form)
-    return {
-        "message": revision["assistant_message"],
-        "form": form_json(db, form),
-        "version": version_json(version),
-        "touched": revision["touched"],
-        "ops": revision["ops"],
-    }
+
+@app.post("/api/forms/{form_id}/luna/refine/stream")
+def refine_with_luna_stream(form_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not settings.openai_api_key:
+        raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier la page avec Luna.")
+    # Authentification et propriété sont vérifiées avant d'ouvrir le flux.
+    owned_form(form_id, db, user)
+    company_id = user.company_id
+
+    def event_stream():
+        def send(payload: dict) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        with SessionLocal() as stream_db:
+            form = stream_db.get(Form, form_id)
+            if not form or form.campaign.company_id != company_id:
+                yield send({"type": "error", "message": "Formulaire introuvable"})
+                return
+            current_html, context = page_revision_context(stream_db, form, data)
+            try:
+                for event in stream_page_revision(current_html, data.instruction, luna_identity(form.campaign.company), **context):
+                    if event["type"] == "final":
+                        result = save_page_revision(stream_db, form, data, event, current_html)
+                        yield send({"type": "final", **result})
+                    elif event["type"] in {"preview", "reset"}:
+                        yield send(event)
+            except (LunaAPIError, ValueError) as exc:
+                stream_db.rollback()
+                yield send({"type": "error", "message": str(exc)})
+            except Exception:
+                stream_db.rollback()
+                logging.exception("La révision Luna en flux a échoué")
+                yield send({"type": "error", "message": "La génération a échoué. Réessayez dans un instant."})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/forms/{form_id}/versions")
@@ -546,9 +878,24 @@ def update_draft(form_id: str, data: DraftUpdate, db: Session = Depends(get_db),
     if not changes:
         raise HTTPException(422, "Aucune modification transmise")
     if form.draft is None and not form.versions:
-        record_version(db, form, published_state(form), source="initial", message="Version publiée")
-    form.draft = {**editing_state(form), **changes}
-    record_version(db, form, form.draft, source="manual", message="Modification manuelle")
+        record_version(db, form, {**published_state(form), "html": form_page(form).html, "thanks_html": form_page(form, "thanks").html}, source="initial", message="Version publiée")
+    html = changes.pop("html", None)
+    form.draft = {**editing_state(form), **changes} if changes else form.draft or published_state(form)
+    page = form_page(form)
+    if html is not None:
+        try:
+            page.draft_html, page.draft_manifest = prepare_page(html, require_form=True)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    else:
+        # Les anciens panneaux peuvent encore modifier les métadonnées. Le
+        # document HTML reste toutefois la source visuelle et ne doit jamais
+        # être reconstruit implicitement depuis ces anciennes colonnes.
+        if page.draft_html is None:
+            page.draft_html = page.html
+            page.draft_manifest = page.manifest
+    thanks = form_page(form, "thanks")
+    record_version(db, form, {**form.draft, "html": page.draft_html, "thanks_html": thanks.draft_html or thanks.html}, source="manual", message="Modification manuelle")
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -557,13 +904,34 @@ def update_draft(form_id: str, data: DraftUpdate, db: Session = Depends(get_db),
 @app.post("/api/forms/{form_id}/draft/publish")
 def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     form = owned_form(form_id, db, user)
-    if not form.draft:
+    page = form_page(form)
+    tunnel = form_tunnel(db, form)
+    if not form.draft and not any(item.draft_html for item in tunnel.pages):
         raise HTTPException(422, "Aucune modification à publier")
-    for key, value in form.draft.items():
+    for key, value in (form.draft or {}).items():
         if key in EDITABLE_KEYS:
             setattr(form, key, value)
+    if page.draft_html:
+        page.html, page.manifest = prepare_page(page.draft_html, require_form=True)
+        consent_field = next((field for field in form.fields if field.get("type") == "consent"), None)
+        # Les anciennes clés restent dans FormResponse.answers et les exports.
+        # Les garder parmi les champs actifs les ferait réapparaître lors de la
+        # prochaine conversion d'un document historique.
+        form.fields = [*page.manifest, *([consent_field] if consent_field else [])]
+        page.draft_html = None
+        page.draft_manifest = None
+    thanks = form_page(form, "thanks")
+    if thanks.draft_html:
+        thanks.html = thanks.draft_html
+        thanks.draft_html = None
+    for extra in tunnel.pages:
+        if extra.id in {page.id, thanks.id} or not extra.draft_html:
+            continue
+        extra.html, extra.manifest = prepare_page(extra.draft_html, require_form=extra.role == "form")
+        extra.draft_html = None
+        extra.draft_manifest = None
     form.draft = None
-    record_version(db, form, published_state(form), source="publish", message="Modifications publiées")
+    record_version(db, form, {**published_state(form), "html": page.html, "thanks_html": thanks.html}, source="publish", message="Modifications publiées")
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -573,6 +941,9 @@ def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depe
 def discard_draft(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     form = owned_form(form_id, db, user)
     form.draft = None
+    for page in form_tunnel(db, form).pages:
+        page.draft_html = None
+        page.draft_manifest = None
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -586,7 +957,22 @@ def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db)
     if not version or version.form_id != form.id:
         raise HTTPException(404, "Version introuvable")
     form.draft = {key: value for key, value in version.snapshot.items() if key in EDITABLE_KEYS}
-    record_version(db, form, form.draft, source="restore", message="Retour à une version précédente")
+    page = form_page(form)
+    page.draft_html, page.draft_manifest = prepare_page(version.snapshot["html"], require_form=True) if version.snapshot.get("html") else converted_html(form, editing_state(form))
+    thanks = form_page(form, "thanks")
+    thanks.draft_html, _ = prepare_page(version.snapshot["thanks_html"], require_form=False) if version.snapshot.get("thanks_html") else converted_html(form, editing_state(form), role="thanks")
+    restored_page_id = version.snapshot.get("page_id")
+    if restored_page_id and restored_page_id not in {page.id, thanks.id}:
+        extra = db.get(Page, restored_page_id)
+        if extra and extra.tunnel_id == form_tunnel(db, form).id:
+            extra.draft_html, extra.draft_manifest = prepare_page(
+                version.snapshot.get("page_html") or extra.html, require_form=extra.role == "form"
+            )
+    restored_snapshot = {**form.draft, "html": page.draft_html,
+                         "thanks_html": thanks.draft_html, "_restored_to_version_id": version.id}
+    if restored_page_id:
+        restored_snapshot.update(page_id=restored_page_id, page_html=extra.draft_html if restored_page_id not in {page.id, thanks.id} and extra else page.draft_html)
+    record_version(db, form, restored_snapshot, source="restore", message="Retour à une version précédente")
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -598,6 +984,7 @@ def duplicate_form(form_id: str, db: Session = Depends(get_db), user: User = Dep
     name = f"{source.name} - copie"
     copy = Form(campaign_id=source.campaign_id, creator_id=user.id, name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=source.thank_you, visibility="private")
     db.add(copy)
+    copy_form_pages(db, source, copy)
     db.commit()
     db.refresh(copy)
     return form_json(db, copy)
@@ -629,8 +1016,8 @@ def library(db: Session = Depends(get_db), user: User = Depends(current_user)):
         .order_by(desc(Form.updated_at)).limit(4)
     ).all()
     return {
-        "featured": [template_payload(template) for template in CURATED_TEMPLATES],
-        "saved": [saved_template_json(template) for template in saved],
+        "featured": [template_preview(template_payload(template), user.company) for template in CURATED_TEMPLATES],
+        "saved": [saved_template_json(template, user.company) for template in saved],
         "recent": [form_json(db, form) for form in recent],
     }
 
@@ -642,7 +1029,7 @@ def save_featured_template(template_key: str, db: Session = Depends(get_db), use
         raise HTTPException(404, "Modèle introuvable")
     existing = db.scalar(select(Template).where(Template.company_id == user.company_id, Template.source_key == template_key))
     if existing:
-        return saved_template_json(existing)
+        return saved_template_json(existing, user.company)
     payload = template_payload(source)
     saved = Template(
         company_id=user.company_id,
@@ -657,7 +1044,7 @@ def save_featured_template(template_key: str, db: Session = Depends(get_db), use
     db.add(saved)
     db.commit()
     db.refresh(saved)
-    return saved_template_json(saved)
+    return saved_template_json(saved, user.company)
 
 
 @app.post("/api/library/featured/{template_key}/use", status_code=201)
@@ -668,6 +1055,7 @@ def use_featured_template(template_key: str, data: TemplateUse, db: Session = De
     campaign = owned_campaign(data.campaign_id, db, user)
     form = form_from_template(db, template_payload(source), user, campaign)
     db.add(form)
+    create_form_pages(db, form)
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -682,6 +1070,7 @@ def use_saved_template(template_id: str, data: TemplateUse, db: Session = Depend
     form = form_from_template(db, saved_template_json(template), user, campaign)
     template.uses += 1
     db.add(form)
+    create_form_pages(db, form)
     db.commit()
     db.refresh(form)
     return form_json(db, form)
@@ -802,7 +1191,12 @@ def public_form(slug: str, db: Session = Depends(get_db)):
     if not form or form.campaign.archived:
         raise HTTPException(404, "Formulaire introuvable")
     c = form.campaign.company
-    return {"name": form.name, "description": form.description, "fields": form.fields, "design": form.design or default_design(), "content": form.content or default_content(form.kind), "thank_you": form.thank_you, "status": form.status, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email, "logo": c.logo}}
+    tunnel = form_tunnel(db, form)
+    page = db.get(Page, tunnel.entry_page_id)
+    if not page or page.tunnel_id != tunnel.id:
+        raise HTTPException(404, "Page d'entrée introuvable")
+    legal = consent_text(form)
+    return {"name": form.name, "description": form.description, "fields": form.fields, "design": form.design or default_design(), "content": form.content or default_content(form.kind), "thank_you": form.thank_you, "status": form.status, "html": render_page(page.html, legal), "thanks_html": "", "manifest": page.manifest, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email, "logo": c.logo}, "tunnel": {"id": tunnel.id, "entry_page_id": tunnel.entry_page_id, "pages": [{"id": item.id, "role": item.role, "position": item.position, "next_page_id": item.next_page_id, "visits": item.visits, "conversions": item.conversions} for item in sorted(tunnel.pages, key=lambda item: item.position)]}}
 
 
 def live_form(slug: str, db: Session) -> Form | None:
@@ -810,28 +1204,132 @@ def live_form(slug: str, db: Session) -> Form | None:
     return form if form and not form.campaign.archived else None
 
 
-@app.post("/api/public/{slug}/visit", status_code=204)
-def track_visit(slug: str, db: Session = Depends(get_db)):
-    """Une visite par session, comptée par le navigateur : un GET ne doit rien écrire."""
+def journey_cookie(request: Request, tunnel: Tunnel) -> dict | None:
+    token = request.cookies.get("sillage_journey")
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    return payload if payload.get("tunnel") == tunnel.id else None
+
+
+def set_journey_cookie(response: Response, request: Request, payload: dict) -> str:
+    token = jwt.encode({**payload, "exp": datetime.now(timezone.utc) + timedelta(hours=1)}, settings.secret_key, algorithm="HS256")
+    response.set_cookie("sillage_journey", token, max_age=3600, httponly=True,
+                        secure=request.url.scheme == "https", samesite="lax", path="/api/public")
+    return token
+
+
+def public_page_json(page: Page, form: Form, answers: dict | None = None) -> dict:
+    return {"page_id": page.id, "role": page.role, "html": render_page(page.html, consent_text(form), answers),
+            "manifest": page.manifest, "next_page_id": page.next_page_id}
+
+
+@app.post("/api/public/{slug}/visit")
+def track_visit(slug: str, request: Request, response: Response, data: PublicPageVisit | None = None, db: Session = Depends(get_db)):
+    """Compte chaque étape au premier affichage du parcours, jamais sur GET."""
     form = live_form(slug, db)
-    if form:
-        form.visits += 1
+    if not form:
+        raise HTTPException(404, "Tunnel indisponible")
+    tunnel = form_tunnel(db, form)
+    page_id = data.page_id if data and data.page_id else tunnel.entry_page_id
+    page = db.get(Page, page_id)
+    if not page or page.tunnel_id != tunnel.id:
+        raise HTTPException(404, "Page introuvable")
+    previous = journey_cookie(request, tunnel)
+    if page.id != tunnel.entry_page_id and (not previous or previous.get("page") != page.id):
+        raise HTTPException(403, "Étape inaccessible")
+    if page.role == "thanks" and not (previous and previous.get("submitted")):
+        raise HTTPException(403, "Étape inaccessible")
+    visited = list(previous.get("visited", [])) if previous else []
+    if page.id not in visited:
+        page.visits += 1
+        if page.role == "form":
+            form.visits += 1
+        visited.append(page.id)
         db.commit()
+    response_id = previous.get("response_id") if previous else None
+    answers = None
+    if page.role == "thanks" and response_id:
+        stored = db.get(FormResponse, response_id)
+        answers = stored.answers if stored and stored.form_id == form.id else None
+    set_journey_cookie(response, request, {"tunnel": tunnel.id, "page": page.id,
+                       "sid": previous.get("sid") if previous else str(uuid4()),
+                       "visited": visited, "submitted": bool(previous and previous.get("submitted")),
+                       "response_id": response_id})
+    return public_page_json(page, form, answers)
+
+
+@app.post("/api/public/{slug}/advance")
+def advance_public_page(slug: str, data: PublicPageAdvance, request: Request, response: Response, db: Session = Depends(get_db)):
+    form = live_form(slug, db)
+    if not form:
+        raise HTTPException(404, "Tunnel indisponible")
+    tunnel = form_tunnel(db, form)
+    journey = journey_cookie(request, tunnel)
+    if not journey or journey.get("page") != data.from_page_id:
+        raise HTTPException(403, "Étape inaccessible")
+    current = db.get(Page, data.from_page_id)
+    target = db.get(Page, current.next_page_id) if current and current.tunnel_id == tunnel.id and current.next_page_id else None
+    if not target or target.tunnel_id != tunnel.id or target.role == "thanks":
+        raise HTTPException(422, "Aucune étape suivante disponible")
+    visited = list(journey.get("visited", []))
+    if target.id not in visited:
+        current.conversions += 1
+        target.visits += 1
+        if target.role == "form":
+            form.visits += 1
+        visited.append(target.id)
+        db.commit()
+    set_journey_cookie(response, request, {**journey, "page": target.id, "visited": visited})
+    return public_page_json(target, form)
 
 
 @app.post("/api/public/{slug}/submit", status_code=201)
-def submit(slug: str, data: SubmitResponse, request: Request, db: Session = Depends(get_db)):
+def submit(slug: str, data: SubmitResponse, request: Request, response: Response, db: Session = Depends(get_db)):
     form = live_form(slug, db)
     if not form:
         raise HTTPException(404, "Ce formulaire n'accepte pas de réponse")
-    required = [f for f in form.fields if f.get("required") and f.get("type") != "consent"]
-    missing = [f["label"] for f in required if data.answers.get(f["id"]) in (None, "", [])]
+    tunnel = form_tunnel(db, form)
+    page = db.get(Page, data.page_id) if data.page_id else form_page(form)
+    if not page or page.tunnel_id != tunnel.id or page.role != "form":
+        raise HTTPException(404, "Page de formulaire introuvable")
+    journey = journey_cookie(request, tunnel)
+    if (journey and journey.get("page") != page.id) or (not journey and page.id != tunnel.entry_page_id):
+        raise HTTPException(403, "Étape inaccessible")
+    names = {field["name"] for field in page.manifest}
+    if set(data.answers) - names:
+        raise HTTPException(422, "La réponse contient des champs inconnus")
+    required = [field for field in page.manifest if field.get("required")]
+    missing = [field["label"] for field in required if data.answers.get(field["name"]) in (None, "", [])]
     if missing:
         raise HTTPException(422, f"Champs requis : {', '.join(missing)}")
-    consent_field = next((f for f in form.fields if f.get("type") == "consent"), None)
-    if consent_field and consent_field.get("required") and not data.consent:
+    if not data.consent:
         raise HTTPException(422, "Le consentement est requis")
-    row = FormResponse(form_id=form.id, answers=data.answers, source=data.source, promo_code=data.promo_code, consent=data.consent, consent_text=consent_field.get("label", "") if consent_field else "", ip_address=request.client.host if request.client else "", user_agent=request.headers.get("user-agent", "")[:300])
+    row = FormResponse(form_id=form.id, answers=data.answers, source=data.source, promo_code=data.promo_code, consent=data.consent, consent_text=consent_text(form), ip_address=request.client.host if request.client else "", user_agent=request.headers.get("user-agent", "")[:300])
     db.add(row)
+    page.conversions += 1
+    next_page = db.get(Page, page.next_page_id) if page.next_page_id else form_page(form, "thanks")
+    if next_page and next_page.tunnel_id != tunnel.id:
+        raise HTTPException(422, "La page suivante est invalide")
+    if next_page:
+        next_page.visits += 1
     db.commit()
-    return {"id": row.id, "thank_you": form.thank_you}
+    visited = list(journey.get("visited", [])) if journey else [page.id]
+    if next_page and next_page.id not in visited:
+        visited.append(next_page.id)
+    token = set_journey_cookie(response, request, {"tunnel": tunnel.id,
+                               "page": next_page.id if next_page else page.id,
+                               "sid": journey.get("sid") if journey else str(uuid4()),
+                               "visited": visited, "submitted": True, "response_id": row.id})
+    return {
+        "id": row.id,
+        "thank_you": form.thank_you,
+        "next_page_id": next_page.id if next_page else None,
+        "thanks_html": render_page(next_page.html, "", data.answers) if next_page else "",
+        "html": render_page(next_page.html, consent_text(form), data.answers) if next_page else "",
+        "manifest": next_page.manifest if next_page else [],
+        "journey_token": token,
+    }

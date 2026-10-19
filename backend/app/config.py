@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4-mini"
-    openai_timeout_seconds: float = 30.0
+    openai_timeout_seconds: float = 90.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

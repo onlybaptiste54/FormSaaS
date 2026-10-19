@@ -29,20 +29,20 @@ docker compose down
 
 Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour repartir de zéro, utiliser explicitement `docker compose down -v`.
 
-Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides.
+Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
 
 ## Fonctionnalités livrées
 
 - Connexion sécurisée par jeton et rôles préparés côté données
 - Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
-- Création par brief avec Luna via l’API OpenAI Responses et sortie structurée, contexte et images de référence
-- Un seul moteur de rendu pour l’éditeur, le formulaire public et les vignettes : l’aperçu est le formulaire
-- Modification par opérations : Luna renvoie quelques changements typés, le serveur les applique et les vérifie
+- Création par brief avec Luna via l’API OpenAI Responses : une génération écrit directement le document HTML/CSS complet
+- Un document HTML/CSS par page, assaini avant stockage puis rendu dans la même iframe isolée pour l’éditeur, la page publique et les vignettes
+- Retouches Luna de page entière, de région ou de bloc CSS, avec aperçu progressif en flux et validation du document avant stockage
 - Sélection au rectangle dans l’éditeur, capture automatique de la zone avec son vrai fond
-- Édition directe des textes au double-clic, sans passer par l’IA
-- Brouillon séparé du formulaire en ligne, historique des versions et annulation par étape
-- Garde-fous serveur : 5 champs métier, identifiants et types conservés, contraste WCAG 4,5:1, tunnel intouchable
-- Trois niveaux : la campagne regroupe des formulaires, le formulaire porte le statut, le lien et les réponses
+- Captures et images du dialogue persistées avec les versions ; brouillon séparé du document en ligne et retour à une version précédente
+- Garde-fous serveur : manifeste des champs extrait du HTML, limites de taille, HTML/CSS filtré, scripts interdits et consentement injecté par le serveur
+- Campagne, tunnels et pages ordonnées : création de pages d’accueil ou de collecte, enchaînement contrôlé et édition avec Luna
+- Parcours public protégé par un cookie signé d’une heure ; visites et passages comptés par page, document de remerciement remis après soumission
 - Bilan par campagne : nombre de formulaires, visites, conversion, meilleur formulaire et activité sur 7 jours
 - Gestion des formulaires : statut, visibilité, duplication, archivage et restauration
 - Formulaire public responsive, validation par champ, pré-remplissage et suivi par canal (`?source=`)
@@ -80,9 +80,9 @@ Variables principales :
 | `SECRET_KEY` | clé de développement à remplacer |
 | `OPENAI_API_KEY` | vide : Luna utilise le générateur local |
 | `OPENAI_MODEL` | `gpt-5.4-mini` |
-| `OPENAI_TIMEOUT_SECONDS` | `30` |
+| `OPENAI_TIMEOUT_SECONDS` | `90` |
 
-Avec une clé configurée, Luna transmet à OpenAI le brief de campagne, le contenu du formulaire vide, les six derniers échanges de la conversation, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque (palette, police, règles). Lors d’une modification visuelle, la capture PNG de la zone encadrée est jointe. Les images de charte déposées dans les paramètres et les images de référence ajoutées à un brief sont envoyées au moment de l’analyse, puis oubliées : elles ne sont pas stockées. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement pour la création lorsqu’aucune clé n’est configurée.
+Avec une clé configurée, Luna transmet à OpenAI le brief initial, le HTML courant, les six derniers échanges Luna, les captures et images jointes au dialogue, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque. Les images jointes aux retouches restent dans les versions pour conserver la conversation après rechargement. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement pour la création lorsqu’aucune clé n’est configurée.
 
 ## Développement sans Docker
 
