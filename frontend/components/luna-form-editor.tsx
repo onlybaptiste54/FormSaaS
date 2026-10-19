@@ -421,11 +421,11 @@ export function LunaFormEditor({ form, onFormChange, targetPage, onTargetPageCha
       <aside className="luna-chat-panel">
         <header className="luna-chat-head">
           <div className="luna-chat-avatar"><Sparkles size={18}/></div>
-          <div><strong>Luna</strong><span>{configured ? "Connectée" : "Indisponible"}</span></div>
+          <div><strong>Luna</strong><span>{configured ? "Connectée · recherche web disponible" : "Indisponible"}</span></div>
           <i className={configured ? "online" : ""}/>
         </header>
         <div className="luna-chat-messages" ref={messagesRef}>
-          {!messages.length && <div className="chat-message assistant"><p>Encadrez une zone de la page, ou écrivez directement ce que vous souhaitez changer.</p></div>}
+          {!messages.length && <div className="chat-message assistant"><p>{configured ? "Encadrez une zone, ou demandez à Luna de consulter un site public pour s’appuyer sur ses informations." : "Luna est indisponible tant que la clé OpenAI n’est pas configurée sur le serveur."}</p></div>}
           {messages.map(message => <div className={`chat-message ${message.role === "luna" ? "assistant" : "user"}${message.cancelled ? " cancelled" : ""}`} key={message.id}>
             {message.role === "user" && <MessageImages screenshot={message.screenshot} images={message.images}/>}
             <p>{message.text}</p>

@@ -17,6 +17,7 @@ type TunnelPage = {
 
 type PublicCampaign = {
   name: string;
+  current_page_id: string;
   thank_you: Record<string, string>;
   html: string;
   thanks_html: string;
@@ -65,17 +66,20 @@ export default function PublicForm({ params }: { params: Promise<{ slug: string 
     let cancelled = false;
     setJourneyReady(false);
     const isPreview = new URLSearchParams(location.search).get("preview") === "1";
+    const requestedPageId = new URLSearchParams(location.search).get("page");
     setPreview(isPreview);
-    publicApi<PublicCampaign>(`/public/${slug}`)
+    const pageQuery = requestedPageId ? "?page_id=" + encodeURIComponent(requestedPageId) : "";
+    publicApi<PublicCampaign>("/public/" + slug + pageQuery)
       .then(async data => {
         if (cancelled) return;
         const entryId = data.tunnel?.entry_page_id ?? null;
-        const entry = data.tunnel?.pages.find(page => page.id === entryId);
+        const initialId = data.current_page_id || entryId;
+        const entry = data.tunnel?.pages.find(page => page.id === initialId);
         setCampaign(data);
-        setCurrentPage({ page_id: entryId, html: data.html, manifest: data.manifest, next_page_id: entry?.next_page_id ?? null });
+        setCurrentPage({ page_id: initialId, html: data.html, manifest: data.manifest, next_page_id: entry?.next_page_id ?? null });
         if (data.status !== "active" || isPreview) return;
         try {
-          const visited = await publicApi<JourneyResponse>(`/public/${slug}/visit`, { page_id: entryId });
+          const visited = await publicApi<JourneyResponse>("/public/" + slug + "/visit", { page_id: initialId });
           if (!cancelled) {
             setCurrentPage(visited);
             setJourneyReady(true);
@@ -102,7 +106,7 @@ export default function PublicForm({ params }: { params: Promise<{ slug: string 
     try {
       const page = await publicApi<JourneyResponse>(`/public/${slug}/advance`, { from_page_id: currentPage.page_id });
       setCurrentPage(page);
-      setDone(false);
+      setDone(campaign.tunnel?.pages.find(item => item.id === page.page_id)?.role === "thanks");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossible d’ouvrir cette étape.");

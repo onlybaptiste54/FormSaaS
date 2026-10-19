@@ -87,8 +87,23 @@ class FormCreate(BaseModel):
     name: str = Field(default="", max_length=90)
     description: str = Field(default="", max_length=260)
     context: str = Field(default="", max_length=800)
+    website_url: str = Field(default="", max_length=300)
     images: list[str] = Field(default_factory=list, max_length=2)
     use_brand: bool = True
+
+    @field_validator("website_url")
+    @classmethod
+    def public_https_website(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return value
+        try:
+            parsed = AnyHttpUrl(value)
+        except ValueError as exc:
+            raise ValueError("Saisissez une adresse de site valide.") from exc
+        if parsed.scheme != "https" or parsed.username or parsed.password:
+            raise ValueError("Le site doit être une adresse HTTPS publique.")
+        return str(parsed)
 
 
 class TemplateUse(BaseModel):
@@ -187,11 +202,14 @@ class SubmitResponse(BaseModel):
 class TunnelPageCreate(BaseModel):
     role: Literal["landing", "form"]
     name: str = Field(default="", max_length=100)
+    template_page_id: str | None = Field(default=None, max_length=36)
 
 
 class TunnelPageUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=100)
     next_page_id: str | None = Field(default=None, max_length=36)
     position: int | None = Field(default=None, ge=0, le=100)
+    settings: ThankYou | None = None
 
 
 class PublicPageVisit(BaseModel):

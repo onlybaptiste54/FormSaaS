@@ -29,7 +29,7 @@ docker compose down
 
 Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour repartir de zéro, utiliser explicitement `docker compose down -v`.
 
-Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
+Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les réglages de remerciement sont portés par la page du tunnel ; l’ancien champ du formulaire est migré puis conservé vide, avec un alias API pour les clients existants. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
 
 ## Fonctionnalités livrées
 
@@ -41,13 +41,13 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Sélection au rectangle dans l’éditeur, capture automatique de la zone avec son vrai fond
 - Captures et images du dialogue persistées avec les versions ; brouillon séparé du document en ligne et retour à une version précédente
 - Garde-fous serveur : manifeste des champs extrait du HTML, limites de taille, HTML/CSS filtré, scripts interdits et consentement injecté par le serveur
-- Campagne, tunnels et pages ordonnées : création de pages d’accueil ou de collecte, enchaînement contrôlé et édition avec Luna
+- Campagne, tunnels et pages ordonnées : étapes visibles dans une liste latérale, création depuis zéro ou depuis une page modèle, aperçu direct et édition avec Luna
 - Parcours public protégé par un cookie signé d’une heure ; visites et passages comptés par page, document de remerciement remis après soumission
 - Bilan par campagne : nombre de formulaires, visites, conversion, meilleur formulaire et activité sur 7 jours
 - Gestion des formulaires : statut, visibilité, duplication, archivage et restauration
 - Formulaire public responsive, validation par champ, pré-remplissage et suivi par canal (`?source=`)
 - Consentement explicite non pré-coché, avec preuve : texte, date, IP et user-agent
-- Page de remerciement, bouton ou redirection, aperçu dans l’éditeur
+- Page de remerciement configurée depuis sa propre étape, avec bouton ou redirection
 - Dashboard : campagnes, formulaires en ligne, activité, sources, conversion et réponses récentes
 - Boîte de réception transverse : filtres campagne, formulaire, source et période, recherche plein texte, détail avec preuve de consentement et export CSV UTF-8
 - Bibliothèque : sélection Sillage, collection d’entreprise, aperçus en rendu réel et choix de la campagne d’accueil
@@ -82,7 +82,7 @@ Variables principales :
 | `OPENAI_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_TIMEOUT_SECONDS` | `90` |
 
-Avec une clé configurée, Luna transmet à OpenAI le brief initial, le HTML courant, les six derniers échanges Luna, les captures et images jointes au dialogue, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque. Les images jointes aux retouches restent dans les versions pour conserver la conversation après rechargement. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes utilisent `store: false`. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; le mode local est utilisé uniquement pour la création lorsqu’aucune clé n’est configurée.
+Avec une clé configurée, Luna transmet à OpenAI le brief initial, le HTML courant, les six derniers échanges Luna, les captures et images jointes au dialogue, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque. La création d’une page lance une recherche web ciblée ; les retouches peuvent aussi chercher sur le web quand le brief le demande. Le champ facultatif « Site web à consulter » fournit une adresse HTTPS à prendre en compte. Luna doit rendre cliquables les sources des faits qu’elle reprend dans la page. Les images jointes aux retouches restent dans les versions pour conserver la conversation après rechargement. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes ne stockent pas de contenu chez OpenAI. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; sans clé, la création reste disponible en mode local et l’interface le signale.
 
 ## Développement sans Docker
 
@@ -118,4 +118,4 @@ docker compose config
 
 Les interfaces sont prêtes à accueillir les autres briques plus lourdes du cahier des charges : WebSocket temps réel, QR codes dynamiques, exports PDF/XLSX, webhooks, synchronisation Google Sheets, PWA hors-ligne et serveur MCP. Elles n’ont volontairement pas été simulées par de faux connecteurs.
 
-Côté produit, les suites naturelles sont la fusion des onglets Tunnel et Remerciement, une page Marque dédiée, des variantes A/B arbitrées par la conversion, et un mode « une question par écran » pour le formulaire public.
+Côté produit, les suites naturelles sont une page Marque dédiée, des variantes A/B arbitrées par la conversion, et un mode « une question par écran » pour le formulaire public.

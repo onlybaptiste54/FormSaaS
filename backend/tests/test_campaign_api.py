@@ -176,6 +176,39 @@ def test_thank_you_patch_preserves_custom_thanks_document(client):
     assert changed.json()["thanks_html"] == before["thanks_html"]
 
 
+def test_thank_you_settings_are_owned_by_tunnel_page(client):
+    from app.database import SessionLocal
+    from app.models import Form
+
+    campaign = client.post("/api/campaigns", json={"name": "Page de fin dédiée"}).json()
+    form = client.post(
+        f"/api/campaigns/{campaign['id']}/forms",
+        json={"prompt": "un formulaire de contact simple"},
+    ).json()
+    path = f"/api/forms/{form['id']}/tunnel"
+    tunnel = client.get(path).json()
+    thanks = next(page for page in tunnel["pages"] if page["role"] == "thanks")
+    settings = {
+        "title": "Merci pour votre demande",
+        "message": "Notre équipe vous répond bientôt.",
+        "action": "none",
+        "button_label": "Retour au site",
+        "button_url": "",
+    }
+
+    saved = client.patch(f"{path}/pages/{thanks['id']}", json={"settings": settings})
+    assert saved.status_code == 200, saved.text
+    saved_page = next(page for page in saved.json()["pages"] if page["id"] == thanks["id"])
+    assert saved_page["settings"] == settings
+    assert "Merci pour votre demande" in saved_page["html"]
+    assert client.get(f"/api/forms/{form['id']}").json()["thank_you"] == settings
+
+    with SessionLocal() as db:
+        stored = db.get(Form, form["id"])
+        assert stored.thank_you == {}
+        assert next(page for page in stored.pages if page.role == "thanks").settings == settings
+
+
 def test_duplicate_keeps_custom_documents_and_sanitizes_them(client):
     from app.database import SessionLocal
     from app.models import Form, Page
@@ -278,6 +311,101 @@ def test_tunnel_pages_and_public_journey_are_scoped(client):
     assert client.post(f"/api/public/{slug}/submit", json={"page_id": form_id, "answers": answers, "consent": True}).status_code == 403
     thanks = client.post(f"/api/public/{slug}/visit", json={"page_id": sent.json()["next_page_id"]})
     assert thanks.status_code == 200
+
+
+def test_reordering_tunnel_pages_updates_the_public_journey(client):
+    campaign = client.post("/api/campaigns", json={"name": "Ordre du parcours"}).json()
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "un formulaire de contact simple"}).json()
+    client.patch(f"/api/forms/{form['id']}", json={"status": "active"})
+    path = f"/api/forms/{form['id']}/tunnel"
+
+    created = client.post(f"{path}/pages", json={"role": "landing", "name": "Présentation"})
+    assert created.status_code == 201, created.text
+    landing = next(page for page in created.json()["pages"] if page["name"] == "Présentation")
+    reordered = client.patch(f"{path}/pages/{landing['id']}", json={"position": 1})
+    assert reordered.status_code == 200, reordered.text
+    tunnel = reordered.json()
+    pages = sorted(tunnel["pages"], key=lambda page: page["position"])
+    by_id = {page["id"]: page for page in pages}
+    thanks = next(page for page in pages if page["role"] == "thanks")
+    assert [page["role"] for page in pages] == ["form", "landing", "thanks"]
+    assert tunnel["entry_page_id"] == form["id"]
+    assert by_id[form["id"]]["next_page_id"] == landing["id"]
+    assert by_id[landing["id"]]["next_page_id"] == thanks["id"]
+
+    slug = form["slug"]
+    assert client.post(f"/api/public/{slug}/visit", json={"page_id": form["id"]}).status_code == 200
+    form_page = client.get(f"/api/public/{slug}", params={"page_id": form["id"]}).json()
+    answers = {field["name"]: "Alice" for field in form_page["manifest"] if field.get("required") and field["type"] != "consent"}
+    submitted = client.post(f"/api/public/{slug}/submit", json={
+        "page_id": form["id"], "answers": answers, "consent": True,
+    })
+    assert submitted.status_code == 201, submitted.text
+    assert submitted.json()["next_page_id"] == landing["id"]
+
+    advanced = client.post(f"/api/public/{slug}/advance", json={"from_page_id": landing["id"]})
+    assert advanced.status_code == 200, advanced.text
+    assert advanced.json()["page_id"] == thanks["id"]
+    assert advanced.json()["role"] == "thanks"
+
+
+def test_tunnel_page_create_supports_blank_templates_and_page_previews(client):
+    campaign = client.post("/api/campaigns", json={"name": "Modèles de pages"}).json()
+    rejected_site = client.post(f"/api/campaigns/{campaign['id']}/forms", json={
+        "prompt": "un formulaire de contact simple", "website_url": "http://atelier.example",
+    })
+    assert rejected_site.status_code == 422
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "un formulaire de contact simple"}).json()
+    path = f"/api/forms/{form['id']}/tunnel"
+
+    source = client.post(f"{path}/pages", json={"role": "landing", "name": "Page source"})
+    assert source.status_code == 201, source.text
+    source_page = next(page for page in source.json()["pages"] if page["name"] == "Page source")
+
+    copied = client.post(f"{path}/pages", json={
+        "role": "landing", "name": "Page modèle copiée", "template_page_id": source_page["id"],
+    })
+    assert copied.status_code == 201, copied.text
+    copy_page = next(page for page in copied.json()["pages"] if page["name"] == "Page modèle copiée")
+    assert copy_page["html"] == source_page["html"]
+    assert copy_page["slug"] == "page-modele-copiee"
+    assert copied.json()["entry_page_id"] == copy_page["id"]
+
+    blank = client.post(f"{path}/pages", json={"role": "form", "name": "Collecte vierge"})
+    assert blank.status_code == 201, blank.text
+    blank_page = next(page for page in blank.json()["pages"] if page["name"] == "Collecte vierge")
+    assert '<form data-sillage="form"' in blank_page["html"]
+    assert 'data-sillage="consent"' in blank_page["html"]
+    assert "<h1 data-luna-id=\"title\">Collecte vierge</h1>" in blank_page["html"]
+    assert blank_page["next_page_id"]
+
+    preview = client.get(f"/api/public/{form['slug']}", params={"page_id": blank_page["id"]})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["current_page_id"] == blank_page["id"]
+    assert '<form data-sillage="form"' in preview.json()["html"]
+    assert preview.json()["manifest"] == []
+
+    entered_first = client.patch(f"{path}/pages/{blank_page['id']}", json={"position": 0})
+    assert entered_first.status_code == 200, entered_first.text
+    assert entered_first.json()["entry_page_id"] == blank_page["id"]
+    client.patch(f"/api/forms/{form['id']}", json={"status": "active"})
+    empty_submit = client.post(f"/api/public/{form['slug']}/submit", json={
+        "page_id": blank_page["id"], "answers": {}, "consent": True,
+    })
+    assert empty_submit.status_code == 422
+    assert "Ajoutez au moins un champ" in empty_submit.json()["detail"]
+
+    renamed = client.patch(f"{path}/pages/{copy_page['id']}", json={"name": "Nouvelle présentation"})
+    assert renamed.status_code == 200, renamed.text
+    renamed_page = next(page for page in renamed.json()["pages"] if page["id"] == copy_page["id"])
+    assert renamed_page["name"] == "Nouvelle présentation"
+
+    other = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "un autre formulaire simple"}).json()
+    other_path = f"/api/forms/{other['id']}/tunnel"
+    cross_tunnel = client.post(f"{other_path}/pages", json={
+        "role": "landing", "name": "Modèle externe", "template_page_id": source_page["id"],
+    })
+    assert cross_tunnel.status_code == 422
 
 
 def test_luna_can_edit_and_publish_a_tunnel_landing(client, monkeypatch):
@@ -447,14 +575,26 @@ def test_luna_creation_stores_a_free_document_when_connected(client, monkeypatch
                 '<main data-sillage-region="hero"><h1>Une page libre</h1><p>Trois arguments</p></main>'
                 '<form data-sillage="form"><label>Email<input name="email" type="email" required></label>'
                 '<div data-sillage="consent"></div><button>Envoyer</button></form></body></html>')
-    monkeypatch.setattr(main, "generate_page", lambda *args, **kwargs: {"message": "Page créée", "html": document, "region": None})
+    def generate_page(*args, **kwargs):
+        assert kwargs["form_name"] == "Contact personnalisé"
+        assert kwargs["description"] == "Une demande pour être rappelé."
+        assert kwargs["website_url"] == "https://atelier.example/"
+        return {"message": "Page créée", "html": document, "region": None}
+
+    monkeypatch.setattr(main, "generate_page", generate_page)
     campaign = client.post("/api/campaigns", json={"name": "Page libre"}).json()
-    created = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "Une vitrine avec un formulaire en bas"})
+    created = client.post(f"/api/campaigns/{campaign['id']}/forms", json={
+        "prompt": "Une vitrine avec un formulaire en bas",
+        "name": "Contact personnalisé",
+        "description": "Une demande pour être rappelé.",
+        "website_url": "https://atelier.example",
+    })
     assert created.status_code == 201, created.text
     form = created.json()
     assert "Une page libre" in form["html"]
     assert "Trois arguments" in form["html"]
     assert [field["name"] for field in form["manifest"]] == ["email"]
+    assert form["name"] == "Contact personnalisé"
 
 
 def test_luna_stream_previews_then_stores_only_the_validated_page(client, monkeypatch):

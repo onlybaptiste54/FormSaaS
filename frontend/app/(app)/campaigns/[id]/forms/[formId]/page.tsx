@@ -5,10 +5,8 @@ import Link from "next/link";
 import { AlertCircle, ArrowDown, ArrowUp, BarChart3, Check, ChevronRight, Code2, Copy, Eye, FileText, Globe2, Link2, MessageSquareText, Plus, Save, Send, Settings2 } from "lucide-react";
 import { LunaFormEditor } from "@/components/luna-form-editor";
 import { ResponsesInbox } from "@/components/responses-inbox";
-import { useMe } from "@/components/shell";
 import { Badge, ErrorState, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
-import { thankYouTitle } from "@/lib/form-text";
 import type { Form, FormTunnel, TunnelPage } from "@/lib/types";
 
 export default function FormDetail({ params }: { params: Promise<{ id: string; formId: string }> }) {
@@ -33,10 +31,12 @@ export default function FormDetail({ params }: { params: Promise<{ id: string; f
     setForm(await api<Form>(`/forms/${formId}`, { method: "PATCH", body: JSON.stringify({ status: form.status === "active" ? "draft" : "active" }) }));
   }
 
-  async function saveThankYou(data: Record<string, string>) {
-    setForm(await api<Form>(`/forms/${formId}`, { method: "PATCH", body: JSON.stringify({ thank_you: data }) }));
+  async function saveThankYou(pageId: string, data: Record<string, string>): Promise<FormTunnel> {
+    const tunnel = await api<FormTunnel>(`/forms/${formId}/tunnel/pages/${pageId}`, { method: "PATCH", body: JSON.stringify({ settings: data }) });
+    setForm(await api<Form>(`/forms/${formId}`));
     setSaved(true);
     setTimeout(() => setSaved(false), 1800);
+    return tunnel;
   }
 
   async function refreshTargetPage(pageId: string) {
@@ -157,34 +157,57 @@ const pageRoleLabels: Record<TunnelPage["role"], string> = {
   landing: "Page d’accueil", form: "Formulaire", thanks: "Remerciement", step: "Étape", custom: "Page",
 };
 
-function TunnelPages({ formId, onEditPage }: { formId: string; onEditPage: (page: TunnelPage) => void }) {
+function TunnelPages({ form, onSave, saved, onEditPage }: { form: Form; onSave: (pageId: string, data: Record<string, string>) => Promise<FormTunnel>; saved: boolean; onEditPage: (page: TunnelPage) => void }) {
   const [tunnel, setTunnel] = useState<FormTunnel | null>(null);
+  const [selectedPageId, setSelectedPageId] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
   const [newRole, setNewRole] = useState<"landing" | "form">("landing");
   const [newName, setNewName] = useState("");
+  const [createMode, setCreateMode] = useState<"template" | "scratch">("scratch");
+  const [templatePageId, setTemplatePageId] = useState("");
+  const [draftName, setDraftName] = useState("");
+  const [detailTab, setDetailTab] = useState<"configuration" | "stats">("configuration");
+  const [copied, setCopied] = useState(false);
 
   async function reload() {
-    setTunnel(await api<FormTunnel>(`/forms/${formId}/tunnel`));
+    const data = await api<FormTunnel>("/forms/" + form.id + "/tunnel");
+    setTunnel(data);
   }
 
   useEffect(() => {
     let current = true;
     setLoading(true);
     setError("");
-    void api<FormTunnel>(`/forms/${formId}/tunnel`)
-      .then(data => { if (current) setTunnel(data); })
+    void api<FormTunnel>("/forms/" + form.id + "/tunnel")
+      .then(data => {
+        if (!current) return;
+        setTunnel(data);
+        setSelectedPageId(data.entry_page_id || data.pages[0]?.id || "");
+      })
       .catch(err => { if (current) setError(err instanceof Error ? err.message : "Tunnel indisponible"); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [formId]);
+  }, [form.id]);
 
-  async function change(pageId: string, changes: { next_page_id?: string | null; position?: number }) {
+  const pages = [...(tunnel?.pages || [])].sort((left, right) => left.position - right.position);
+  const selectedPage = pages.find(page => page.id === selectedPageId) || pages[0];
+  const availableTemplates = pages.filter(page => page.role === newRole);
+  const selectedTemplateId = availableTemplates.some(page => page.id === templatePageId)
+    ? templatePageId : availableTemplates[0]?.id || "";
+
+  useEffect(() => {
+    setDraftName(selectedPage?.name || "");
+    setDetailTab("configuration");
+  }, [selectedPage?.id, selectedPage?.name]);
+
+  async function change(pageId: string, changes: { name?: string; next_page_id?: string | null; position?: number }) {
     setBusy(true);
     setError("");
     try {
-      await api(`/forms/${formId}/tunnel/pages/${pageId}`, { method: "PATCH", body: JSON.stringify(changes) });
+      await api("/forms/" + form.id + "/tunnel/pages/" + pageId, { method: "PATCH", body: JSON.stringify(changes) });
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Modification impossible");
@@ -195,14 +218,24 @@ function TunnelPages({ formId, onEditPage }: { formId: string; onEditPage: (page
 
   async function addPage(event: FormEvent) {
     event.preventDefault();
+    if (!newName.trim() || (createMode === "template" && !selectedTemplateId)) return;
     setBusy(true);
     setError("");
     try {
-      await api(`/forms/${formId}/tunnel/pages`, {
-        method: "POST", body: JSON.stringify({ role: newRole, name: newName.trim() || undefined }),
+      const existingIds = new Set(pages.map(page => page.id));
+      const created = await api<FormTunnel>("/forms/" + form.id + "/tunnel/pages", {
+        method: "POST",
+        body: JSON.stringify({
+          role: newRole,
+          name: newName.trim(),
+          ...(createMode === "template" ? { template_page_id: selectedTemplateId } : {}),
+        }),
       });
+      const newPage = created.pages.find(page => !existingIds.has(page.id));
+      setTunnel(created);
+      if (newPage) setSelectedPageId(newPage.id);
       setNewName("");
-      await reload();
+      setShowCreate(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Création impossible");
     } finally {
@@ -210,100 +243,185 @@ function TunnelPages({ formId, onEditPage }: { formId: string; onEditPage: (page
     }
   }
 
-  const pages = [...(tunnel?.pages || [])].sort((left, right) => left.position - right.position);
-  const byId = new Map(pages.map(page => [page.id, page]));
+  async function saveName(event: FormEvent) {
+    event.preventDefault();
+    if (selectedPage && draftName.trim() && draftName.trim() !== selectedPage.name) {
+      await change(selectedPage.id, { name: draftName.trim() });
+    }
+  }
 
-  return <section className="panel tunnel-pages">
-    <div className="panel-head"><div><p className="eyebrow">PARCOURS VISITEUR</p><h2>Pages du tunnel</h2></div><span className="tunnel-pages-count">{pages.length} étapes</span></div>
-    <p className="tunnel-pages-intro">Organisez les pages et indiquez où mène chaque étape. Les visites et les passages sont comptés sur chaque page.</p>
-    {loading && <p className="tunnel-pages-state">Chargement des étapes…</p>}
-    {error && <p className="form-error" role="alert">{error}</p>}
-    {!loading && pages.length === 0 && <p className="tunnel-pages-state">Aucune page dans ce tunnel.</p>}
-    <ol className="tunnel-page-list">{pages.map((page, index) => {
-      const next = page.next_page_id ? byId.get(page.next_page_id) : undefined;
-      const abandonment = next && page.visits > 0
-        ? `${Math.max(0, Math.min(100, Math.round(100 * (1 - next.visits / page.visits))))} %`
-        : "—";
-      return <li className="tunnel-page-row" key={page.id}>
-        <div className="tunnel-page-identity">
-          <span className="tunnel-page-number">{String(index + 1).padStart(2, "0")}</span>
-          <div><strong>{pageRoleLabels[page.role]}</strong>{page.id === tunnel?.entry_page_id && <span className="tunnel-entry-tag">Entrée</span>}<small>{page.slug || `Page ${index + 1}`}</small></div>
-        </div>
-        <div className="tunnel-page-stats">
-          <span><strong>{page.visits}</strong><small>Visites</small></span>
-          <span><strong>{page.conversions}</strong><small>Passages</small></span>
-          <span><strong>{abandonment}</strong><small>Abandon</small></span>
-        </div>
-        <div className="tunnel-page-controls">
-          {page.role !== "thanks" && <label>Étape suivante
-            <select value={page.next_page_id || ""} disabled={busy} onChange={event => void change(page.id, { next_page_id: event.target.value || null })}>
-              <option value="">Fin du parcours</option>
-              {pages.filter(candidate => candidate.id !== page.id).map(candidate =>
-                <option value={candidate.id} key={candidate.id}>{pageRoleLabels[candidate.role]} · {candidate.slug}</option>) }
-            </select>
-          </label>}
-          <div className="tunnel-page-order" aria-label={`Ordre de ${pageRoleLabels[page.role]}`}>
-            <button type="button" aria-label="Monter cette page" title="Monter" disabled={busy || index === 0 || page.role === "thanks" || pages[index - 1]?.role === "thanks"} onClick={() => void change(page.id, { position: pages[index - 1].position })}><ArrowUp size={16}/></button>
-            <button type="button" aria-label="Descendre cette page" title="Descendre" disabled={busy || index === pages.length - 1 || page.role === "thanks" || pages[index + 1]?.role === "thanks"} onClick={() => void change(page.id, { position: pages[index + 1].position })}><ArrowDown size={16}/></button>
+  async function saveThanks(pageId: string, data: Record<string, string>) {
+    setTunnel(await onSave(pageId, data));
+  }
+
+  const previewPath = selectedPage ? "/forms/" + form.slug + "?preview=1&page=" + selectedPage.id : "";
+  async function copyPreviewPath() {
+    if (!previewPath) return;
+    try {
+      await navigator.clipboard.writeText(previewPath);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setError("Impossible de copier le lien d’aperçu.");
+    }
+  }
+
+  const nextPage = selectedPage?.next_page_id ? pages.find(page => page.id === selectedPage.next_page_id) : undefined;
+  const selectedPosition = selectedPage ? pages.findIndex(page => page.id === selectedPage.id) : -1;
+  const hasEarlierForm = pages.slice(0, selectedPosition).some(page => page.role === "form");
+  const abandonment = selectedPage && nextPage && selectedPage.visits > 0
+    ? Math.max(0, Math.min(100, Math.round(100 * (1 - nextPage.visits / selectedPage.visits)))) + " %"
+    : "—";
+
+  return <div className="tunnel-studio">
+    <aside className="panel tunnel-step-sidebar">
+      <div className="tunnel-step-sidebar-head">
+        <div><p className="eyebrow">VOTRE PARCOURS</p><h2>Étapes</h2></div>
+        <span>{pages.length}</span>
+      </div>
+      <p className="tunnel-pages-intro">Les flèches réorganisent le parcours. Vous pouvez aussi choisir la page suivante pour chaque étape.</p>
+      {loading && <p className="tunnel-pages-state">Chargement des étapes…</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <ol className="tunnel-step-list">
+        {pages.map((page, index) => {
+          const Icon = page.role === "landing" ? Globe2 : page.role === "thanks" ? Check : FileText;
+          return <li key={page.id} className={selectedPage?.id === page.id ? "selected" : ""}>
+            <button type="button" className="tunnel-step-select" onClick={() => setSelectedPageId(page.id)} aria-current={selectedPage?.id === page.id ? "step" : undefined}>
+              <span className="tunnel-step-icon"><Icon size={17}/></span>
+              <span className="tunnel-step-copy"><strong>{page.name}</strong><small>{pageRoleLabels[page.role]}{page.id === tunnel?.entry_page_id ? " · Entrée" : ""}</small></span>
+            </button>
+            <span className="tunnel-step-number">{String(index + 1).padStart(2, "0")}</span>
+            {page.role !== "thanks" && <div className="tunnel-page-order" aria-label={"Ordre de " + page.name}>
+              <button type="button" aria-label={"Monter " + page.name} title="Monter" disabled={busy || index === 0 || pages[index - 1]?.role === "thanks"} onClick={() => void change(page.id, { position: pages[index - 1].position })}><ArrowUp size={15}/></button>
+              <button type="button" aria-label={"Descendre " + page.name} title="Descendre" disabled={busy || index === pages.length - 1 || pages[index + 1]?.role === "thanks"} onClick={() => void change(page.id, { position: pages[index + 1].position })}><ArrowDown size={15}/></button>
+            </div>}
+          </li>;
+        })}
+      </ol>
+      <button type="button" className="tunnel-step-add" disabled={busy || pages.length >= 20} onClick={() => {
+        setNewRole("landing");
+        setNewName("");
+        setCreateMode(pages.some(page => page.role === "landing") ? "template" : "scratch");
+        setTemplatePageId("");
+        setShowCreate(true);
+      }}><Plus size={17}/>Ajouter une étape</button>
+      <div className="tunnel-fallback">
+        <p>PAGE DE FIN</p>
+        <button type="button" onClick={() => {
+          const thanks = pages.find(page => page.role === "thanks");
+          if (thanks) setSelectedPageId(thanks.id);
+        }}><span><Check size={16}/></span><span><strong>Page de remerciement</strong><small>Après l’envoi du formulaire</small></span></button>
+      </div>
+    </aside>
+
+    <section className="panel tunnel-step-detail">
+      {!selectedPage ? <p className="tunnel-pages-state">Aucune étape disponible.</p> : <>
+        <header className="tunnel-step-detail-head">
+          <div><p className="eyebrow">{pageRoleLabels[selectedPage.role].toUpperCase()}</p><h2>{selectedPage.name}</h2><span>Étape {pages.findIndex(page => page.id === selectedPage.id) + 1} sur {pages.length}</span></div>
+          <div className="tunnel-step-actions">
+            <a className="button button-secondary" href={previewPath} target="_blank" rel="noreferrer"><Eye size={17}/>Aperçu de l’étape</a>
+            <button type="button" className="button button-primary" onClick={() => onEditPage(selectedPage)}><FileText size={17}/>Modifier la page</button>
           </div>
-          {page.id !== formId && page.role !== "thanks" && <button type="button" className="text-link" onClick={() => onEditPage(page)}>Modifier avec Luna</button>}
-        </div>
-      </li>;
-    })}</ol>
-    <form className="tunnel-page-add" onSubmit={event => void addPage(event)}>
-      <label>Type de page<select value={newRole} onChange={event => setNewRole(event.target.value as "landing" | "form")} disabled={busy}>
-        <option value="landing">Page d’accueil</option><option value="form">Formulaire</option>
-      </select></label>
-      <label>Nom (facultatif)<input value={newName} onChange={event => setNewName(event.target.value)} maxLength={90} placeholder="Ex. Présentation" disabled={busy}/></label>
-      <button className="button button-secondary" disabled={busy}><Plus size={16}/>Ajouter une page</button>
-    </form>
-  </section>;
+        </header>
+        <nav className="tunnel-step-tabs">
+          <button type="button" className={detailTab === "configuration" ? "active" : ""} onClick={() => setDetailTab("configuration")}><Settings2 size={16}/>Configuration</button>
+          <button type="button" className={detailTab === "stats" ? "active" : ""} onClick={() => setDetailTab("stats")}><BarChart3 size={16}/>Statistiques</button>
+        </nav>
+
+        {detailTab === "stats" ? <div className="tunnel-step-stats tunnel-step-stats-large">
+          <span><strong>{selectedPage.visits}</strong><small>Visites</small></span>
+          <span><strong>{selectedPage.conversions}</strong><small>Passages vers la suite</small></span>
+          <span><strong>{abandonment}</strong><small>Abandon vers l’étape suivante</small></span>
+        </div> : selectedPage.role === "thanks"
+          ? <ThankYouSettings page={selectedPage} onSave={saveThanks} saved={saved}/>
+          : <div className="tunnel-page-config">
+            <form className="tunnel-page-name-form" onSubmit={event => void saveName(event)}>
+              <label>Nom de l’étape<input value={draftName} onChange={event => setDraftName(event.target.value)} maxLength={100} disabled={busy || selectedPage.id === form.id}/></label>
+              <label>URL d’aperçu<div className="tunnel-preview-path"><input readOnly value={previewPath}/><button type="button" onClick={() => void copyPreviewPath()} aria-label="Copier le lien d’aperçu" title="Copier le lien d’aperçu">{copied ? <Check size={17}/> : <Copy size={17}/>}</button></div></label>
+              <button type="submit" className="button button-secondary" disabled={busy || !draftName.trim() || draftName.trim() === selectedPage.name || selectedPage.id === form.id}>Enregistrer le nom</button>
+            </form>
+            <div className="tunnel-next-page">
+              <label>Cette étape mène à
+                <select value={selectedPage.next_page_id || ""} disabled={busy} onChange={event => void change(selectedPage.id, { next_page_id: event.target.value || null })}>
+                  <option value="">Fin du parcours</option>
+                  {pages.filter(page => page.id !== selectedPage.id && (page.role !== "thanks" || selectedPage.role === "form" || hasEarlierForm)).map(page =>
+                    <option value={page.id} key={page.id}>{page.name} · {pageRoleLabels[page.role]}</option>)}
+                </select>
+              </label>
+              <p>Choisissez la page affichée après le clic sur « Continuer » ou après l’envoi du formulaire.</p>
+            </div>
+          </div>}
+      </>}
+    </section>
+
+    {showCreate && <div className="tunnel-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setShowCreate(false); }}>
+      <section className="tunnel-create-modal" role="dialog" aria-modal="true" aria-labelledby="tunnel-create-title">
+        <header><h2 id="tunnel-create-title">Créer une étape</h2><button type="button" aria-label="Fermer" onClick={() => setShowCreate(false)} disabled={busy}><span>×</span></button></header>
+        <form onSubmit={event => void addPage(event)}>
+          <label>Nom<input value={newName} onChange={event => setNewName(event.target.value)} maxLength={100} required autoFocus placeholder="Ex. Présentation de l’offre"/></label>
+          <label>Type de page<select value={newRole} onChange={event => {
+            const role = event.target.value as "landing" | "form";
+            setNewRole(role);
+            setTemplatePageId("");
+            setCreateMode(pages.some(page => page.role === role) ? "template" : "scratch");
+          }} disabled={busy}>
+            <option value="landing">Page de présentation</option><option value="form">Page de collecte</option>
+          </select></label>
+          <fieldset className="tunnel-create-mode"><legend>Contenu de départ</legend>
+            <label><input type="radio" name="createMode" checked={createMode === "template"} disabled={!availableTemplates.length || busy} onChange={() => setCreateMode("template")}/>Choisir un modèle</label>
+            <label><input type="radio" name="createMode" checked={createMode === "scratch"} disabled={busy} onChange={() => setCreateMode("scratch")}/>Partir de zéro</label>
+          </fieldset>
+          {createMode === "template" && (availableTemplates.length
+            ? <label>Modèle<select value={selectedTemplateId} onChange={event => setTemplatePageId(event.target.value)} disabled={busy}>
+              {availableTemplates.map(page => <option value={page.id} key={page.id}>{page.name}</option>)}
+            </select></label>
+            : <p className="field-hint">Ajoutez d’abord une page de ce type pour la réutiliser comme modèle.</p>)}
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <footer><button type="button" className="button button-secondary" onClick={() => setShowCreate(false)} disabled={busy}>Annuler</button><button type="submit" className="button button-primary" disabled={busy || !newName.trim() || (createMode === "template" && !selectedTemplateId)}>{busy ? "Création…" : "Créer l’étape"}</button></footer>
+        </form>
+      </section>
+    </div>}
+  </div>;
 }
 
-function Tunnel({ form, onSave, saved, onEditPage }: { form: Form; onSave: (data: Record<string, string>) => Promise<void>; saved: boolean; onEditPage: (page: TunnelPage) => void }) {
-  const me = useMe();
-  const [data, setData] = useState<Record<string, string>>(form.thank_you);
+function ThankYouSettings({ page, onSave, saved }: { page: TunnelPage; onSave: (pageId: string, data: Record<string, string>) => Promise<void>; saved: boolean }) {
+  const [data, setData] = useState<Record<string, string>>(page.settings || {});
   const [error, setError] = useState("");
-  const company = me?.company.name || "Votre entreprise";
+
+  useEffect(() => setData(page.settings || {}), [page.id, page.settings]);
 
   async function save() {
     setError("");
     try {
-      await onSave(data);
+      await onSave(page.id, data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Enregistrement impossible");
     }
   }
 
-  return <div className="detail-content"><TunnelPages formId={form.id} onEditPage={onEditPage}/><div className="tunnel-grid">
-    <div className="panel tunnel-config">
-      <p className="eyebrow">APRÈS L’ENVOI</p>
-      <h2>Page de remerciement</h2>
-      <label>Titre<input value={data.title || ""} onChange={event => setData({ ...data, title: event.target.value })}/></label>
-      <p className="field-hint">Utilisez <code>{"{prenom}"}</code> pour reprendre le prénom, s’il est demandé dans le formulaire.</p>
-      <label>Message<textarea value={data.message || ""} onChange={event => setData({ ...data, message: event.target.value })}/></label>
-      <label>Action<select value={data.action || "none"} onChange={event => setData({ ...data, action: event.target.value })}>
-        <option value="none">Aucune action</option>
-        <option value="cta">Bouton vers une page</option>
-        <option value="redirect">Redirection automatique</option>
-      </select></label>
-      {data.action !== "none" && <>
-        <label>Texte du bouton<input value={data.button_label || ""} onChange={event => setData({ ...data, button_label: event.target.value })}/></label>
-        <label>URL de destination<input value={data.button_url || ""} onChange={event => setData({ ...data, button_url: event.target.value })} placeholder="https://"/></label>
-        {data.action === "redirect" && <p className="field-hint">Le visiteur est redirigé après 3 secondes, avec un lien de secours.</p>}
-      </>}
-      {error && <p className="form-error">{error}</p>}
-      <button className="button button-primary" onClick={() => void save()}>{saved ? <><Check size={17}/>Enregistré</> : <><Save size={17}/>Enregistrer</>}</button>
-    </div>
-    <div className="thanks-preview">
-      <div className="client-monogram">{company.split(" ").map(word => word[0]).join("").slice(0, 2).toUpperCase()}</div>
-      <div className="thanks-check"><Check/></div>
-      <h2>{thankYouTitle(data.title, { name: "Léa Bernard" })}</h2>
-      <p>{data.message}</p>
-      {data.action !== "none" && <button className="button button-primary">{data.button_label || "Continuer"}</button>}
-      <small>{company} · Mentions légales</small>
-    </div>
-  </div></div>;
+  return <div className="tunnel-config tunnel-thanks-config">
+    <p className="eyebrow">RÉGLAGES DE LA PAGE</p>
+    <h3>{page.name}</h3>
+    <label>Titre<input value={data.title || ""} onChange={event => setData({ ...data, title: event.target.value })}/></label>
+    <p className="field-hint">Utilisez <code>{"{prenom}"}</code> pour reprendre le prénom, s’il est demandé dans le formulaire.</p>
+    <label>Message<textarea value={data.message || ""} onChange={event => setData({ ...data, message: event.target.value })}/></label>
+    <label>Action<select value={data.action || "none"} onChange={event => setData({ ...data, action: event.target.value })}>
+      <option value="none">Aucune action</option><option value="cta">Bouton vers une page</option><option value="redirect">Redirection automatique</option>
+    </select></label>
+    {data.action !== "none" && <>
+      <label>Texte du bouton<input value={data.button_label || ""} onChange={event => setData({ ...data, button_label: event.target.value })}/></label>
+      <label>URL de destination<input value={data.button_url || ""} onChange={event => setData({ ...data, button_url: event.target.value })} placeholder="https://"/></label>
+      {data.action === "redirect" && <p className="field-hint">Le visiteur est redirigé après 3 secondes, avec un lien de secours.</p>}
+    </>}
+    {error && <p className="form-error">{error}</p>}
+    <button className="button button-primary" onClick={() => void save()}>{saved ? <><Check size={17}/>Enregistré</> : <><Save size={17}/>Enregistrer</>}</button>
+  </div>;
+}
+
+function Tunnel({ form, onSave, saved, onEditPage }: { form: Form; onSave: (pageId: string, data: Record<string, string>) => Promise<FormTunnel>; saved: boolean; onEditPage: (page: TunnelPage) => void }) {
+  return <div className="detail-content">
+    <TunnelPages form={form} onSave={onSave} saved={saved} onEditPage={onEditPage}/>
+  </div>;
 }
 
 function labelType(type: string) {

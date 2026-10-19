@@ -28,14 +28,17 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
   const [description, setDescription] = useState("");
   const [prompt, setPrompt] = useState("");
   const [context, setContext] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [useBrand, setUseBrand] = useState(true);
+  const [lunaConfigured, setLunaConfigured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => { void api<Campaign>(`/campaigns/${id}`).then(setCampaign).catch(() => undefined); }, [id]);
+  useEffect(() => { void api<{ configured: boolean }>("/luna/status").then(data => setLunaConfigured(data.configured)).catch(() => setLunaConfigured(false)); }, []);
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
 
   async function addImage(event: React.ChangeEvent<HTMLInputElement>) {
@@ -67,7 +70,7 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
     try {
       const form = await api<Form>(`/campaigns/${id}/forms`, {
         method: "POST",
-        body: JSON.stringify({ prompt, name, description, context, images, use_brand: useBrand }),
+        body: JSON.stringify({ prompt, name, description, context, website_url: websiteUrl, images, use_brand: useBrand }),
       });
       router.push(`/campaigns/${id}/forms/${form.id}?tab=form`);
     } catch (err) {
@@ -111,6 +114,10 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
         <p className="eyebrow">LUNA · CRÉATION ASSISTÉE</p>
         <h1>Que doit contenir le formulaire&nbsp;?</h1>
         <p className="creation-intro">Décrivez ce que vous voulez apprendre de vos visiteurs. Je m’occupe des champs, du texte et de la conformité.</p>
+        <div className={lunaConfigured ? "creation-ai-status ready" : "creation-ai-status"}>
+          <span>{lunaConfigured ? "Recherche web disponible" : lunaConfigured === null ? "Vérification de Luna…" : "Mode local : IA et recherche web non configurées"}</span>
+          {lunaConfigured === false && <small>Ajoutez OPENAI_API_KEY à la configuration du serveur pour activer la création par IA.</small>}
+        </div>
         <form onSubmit={create} className="prompt-form">
           <div className="prompt-box">
             <MessageCircle size={20}/>
@@ -119,6 +126,10 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
           </div>
           <details className="creation-context">
             <summary>Contexte et images de référence <small>facultatif</small></summary>
+            <label className="creation-website">Site web à consulter <small>facultatif</small>
+              <input type="url" value={websiteUrl} maxLength={300} placeholder="https://www.votre-entreprise.fr" onChange={event => setWebsiteUrl(event.target.value)}/>
+            </label>
+            <p className="field-hint">Luna peut s’appuyer sur les informations publiques de votre site et sur le brief pour créer une page plus spécifique.</p>
             <textarea value={context} maxLength={800} placeholder="Ex. c’est pour nos portes ouvertes du 12 octobre, le ton doit rester familial." onChange={event => setContext(event.target.value)}/>
             <div className="brand-dropzone">
               {images.map((image, index) => <div className="brand-thumb" key={image.slice(-24)}>

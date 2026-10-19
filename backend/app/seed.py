@@ -71,13 +71,14 @@ def seed(db: Session):
                 legacy_to_html(form_state, company_state, role="thanks"), require_form=False
             )
             thanks_id = thanks_page_id(form.id)
-            db.add(Page(id=thanks_id, form_id=form.id, tunnel_id=tunnel_id, slug=None, role="thanks", position=1,
-                        html=thanks_html, manifest=thanks_manifest, visits=count))
+            db.add(Page(id=thanks_id, form=form, tunnel_id=tunnel_id, slug=None, role="thanks", position=1,
+                        html=thanks_html, manifest=thanks_manifest, settings=form.thank_you, visits=count))
             db.flush()
-            db.add(Page(id=form.id, form_id=form.id, tunnel_id=tunnel_id, slug=form.slug, role="form", position=0,
+            db.add(Page(id=form.id, form=form, tunnel_id=tunnel_id, slug=form.slug, role="form", position=0,
                         next_page_id=thanks_id, html=form_html, manifest=manifest,
                         visits=visits, conversions=count))
             tunnel.entry_page_id = form.id
+            form.thank_you = {}
             for n in range(count):
                 answers = {"name": ["Léa Bernard", "Thomas Petit", "Inès Robert", "Hugo Leroy"][n % 4], "email": f"contact{n + 1}@exemple.fr"}
                 if kind == "survey":

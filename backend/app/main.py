@@ -2,6 +2,8 @@ import csv
 import io
 import json
 import logging
+import re
+import unicodedata
 from html import escape
 from uuid import uuid4
 from contextlib import asynccontextmanager
@@ -20,7 +22,7 @@ from .database import SessionLocal, get_db, initialize_schema
 from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
-from .page_document import legacy_to_html, prepare_page, render_page
+from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page
 from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import create_token, current_user, verify_password
 from .seed import seed
@@ -47,6 +49,11 @@ EDITABLE_KEYS = ("name", "description", "fields", "design", "content", "thank_yo
 VERSION_LIMIT = 30
 
 
+def thank_you_settings(form: Form) -> dict:
+    page = next((item for item in form.pages if item.role == "thanks"), None)
+    return (page.settings if page and page.settings is not None else form.thank_you) or {}
+
+
 def published_state(f: Form) -> dict:
     """Etat en ligne du formulaire : ce que voit un visiteur."""
     return {
@@ -55,7 +62,7 @@ def published_state(f: Form) -> dict:
         "fields": f.fields,
         "design": f.design or default_design(),
         "content": f.content or default_content(f.kind),
-        "thank_you": f.thank_you,
+        "thank_you": thank_you_settings(f),
     }
 
 
@@ -85,12 +92,15 @@ def create_form_pages(db: Session, form: Form, initial_html: tuple[str, list[dic
     state = published_state(form)
     html, manifest = initial_html if initial_html is not None else converted_html(form, state)
     thanks_html, _ = converted_html(form, state, role="thanks")
-    thanks = Page(id=thanks_page_id(form.id), form_id=form.id, tunnel_id=tunnel_id, role="thanks", position=1, html=thanks_html)
+    thanks = Page(id=thanks_page_id(form.id), form=form, tunnel_id=tunnel_id,
+                  name="Page de remerciement", role="thanks", position=1, html=thanks_html,
+                  settings=state["thank_you"])
     db.add(thanks)
     db.flush()
-    db.add(Page(id=form.id, form_id=form.id, tunnel_id=tunnel_id, slug=form.slug, role="form", position=0,
+    db.add(Page(id=form.id, form=form, tunnel_id=tunnel_id, name=form.name, slug=form.slug, role="form", position=0,
                 next_page_id=thanks.id, html=html, manifest=manifest, visits=form.visits))
     tunnel.entry_page_id = form.id
+    form.thank_you = {}
 
 
 def copy_form_pages(db: Session, source: Form, target: Form) -> None:
@@ -107,14 +117,17 @@ def copy_form_pages(db: Session, source: Form, target: Form) -> None:
               if page.id == thanks_page_id(source.id) else uid() for page in source_pages}
     for old in source_pages:
         html, manifest = prepare_page(old.html, require_form=old.role == "form")
-        db.add(Page(id=mapped[old.id], form_id=target.id if old.form_id == source.id else None,
-                    tunnel_id=tunnel_id, slug=target.slug if old.id == source.id else None,
-                    role=old.role, position=old.position, html=html, manifest=manifest))
+        db.add(Page(id=mapped[old.id], form=target if old.form_id == source.id else None,
+                    tunnel_id=tunnel_id, name=target.name if old.id == source.id else old.name,
+                    slug=target.slug if old.id == source.id else None,
+                    role=old.role, position=old.position, html=html, manifest=manifest,
+                    settings=(old.settings or source.thank_you) if old.role == "thanks" else {}))
     db.flush()
     for old in source_pages:
         if old.next_page_id:
             db.get(Page, mapped[old.id]).next_page_id = mapped[old.next_page_id]
     tunnel.entry_page_id = mapped[source_tunnel.entry_page_id]
+    target.thank_you = {}
 
 
 def consent_text(form: Form) -> str:
@@ -214,7 +227,7 @@ def form_json(db: Session, f: Form):
         "fields": f.fields,
         "design": f.design or default_design(),
         "content": f.content or default_content(f.kind),
-        "thank_you": f.thank_you,
+        "thank_you": thank_you_settings(f),
         "draft": f.draft,
         "html": render_page(page.html, legal),
         "draft_html": render_page(page.draft_html, legal) if page.draft_html else None,
@@ -584,7 +597,8 @@ def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db
         initial_html = None
         if settings.openai_api_key:
             page_result = generate_page(
-                data.prompt, identity, context=data.context, images=data.images,
+                data.prompt, identity, form_name=data.name, description=data.description,
+                context=data.context, website_url=data.website_url, images=data.images,
                 api_key=settings.openai_api_key, model=settings.openai_model,
                 timeout_seconds=settings.openai_timeout_seconds,
             )
@@ -601,7 +615,8 @@ def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db
     if data.description.strip():
         generated["description"] = data.description.strip()
     generated["slug"] = unique_slug(db, generated["name"])
-    form = Form(campaign_id=campaign.id, creator_id=user.id, brief={"prompt": data.prompt, "context": data.context}, **generated)
+    form = Form(campaign_id=campaign.id, creator_id=user.id,
+                brief={"prompt": data.prompt, "context": data.context, "website_url": data.website_url}, **generated)
     db.add(form)
     create_form_pages(db, form, initial_html)
     db.commit()
@@ -618,13 +633,23 @@ def get_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(c
 def update_form(form_id: str, data: FormUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     form = owned_form(form_id, db, user)
     changes = data.model_dump(exclude_none=True)
+    legacy_thank_you = changes.pop("thank_you", None)
     previous = published_state(form)
     page = form_page(form)
     thanks = form_page(form, "thanks")
     update_legacy_form = bool({"name", "description", "fields", "design"} & changes.keys()) and page.html == converted_html(form, previous)[0]
-    update_legacy_thanks = "thank_you" in changes and thanks.html == converted_html(form, previous, role="thanks")[0]
+    update_legacy_thanks = legacy_thank_you is not None and thanks.html == converted_html(form, previous, role="thanks")[0]
     for key, value in changes.items():
         setattr(form, key, value)
+    if legacy_thank_you is not None:
+        new_settings = legacy_thank_you
+        thanks.settings = new_settings
+        form.thank_you = {}
+    if "name" in changes:
+        page.name = form.name
+        tunnel = db.get(Tunnel, initial_tunnel_id(form.id))
+        if tunnel:
+            tunnel.name = form.name
     if "status" in changes:
         tunnel = db.get(Tunnel, initial_tunnel_id(form.id))
         if tunnel:
@@ -646,16 +671,35 @@ def form_tunnel(db: Session, form: Form) -> Tunnel:
 
 def tunnel_json(tunnel: Tunnel, form: Form) -> dict:
     pages = sorted(tunnel.pages, key=lambda item: (item.position, item.created_at, item.id))
+    roles = {"landing": "Page d’accueil", "form": "Formulaire", "thanks": "Remerciement", "step": "Étape", "custom": "Page"}
     return {
         "id": tunnel.id, "name": tunnel.name, "status": tunnel.status,
         "entry_page_id": tunnel.entry_page_id,
         "pages": [{
             "id": page.id, "role": page.role, "position": page.position,
+            "name": page.name or (page.slug.replace("-", " ").capitalize() if page.slug else roles.get(page.role, "Page")),
             "slug": page.slug, "next_page_id": page.next_page_id,
+            "settings": page.settings or {},
             "html": render_page(page.draft_html or page.html, consent_text(form)),
             "visits": page.visits, "conversions": page.conversions,
         } for page in pages],
     }
+
+
+def unique_page_slug(db: Session, name: str, *, exclude_page_id: str | None = None) -> str:
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")[:70] or "etape"
+    candidate = base
+    suffix = 2
+    while True:
+        query = select(Page.id).where(Page.slug == candidate)
+        if exclude_page_id:
+            query = query.where(Page.id != exclude_page_id)
+        if not db.scalar(query):
+            return candidate
+        tail = f"-{suffix}"
+        candidate = f"{base[:70-len(tail)]}{tail}"
+        suffix += 1
 
 
 @app.get("/api/forms/{form_id}/tunnel")
@@ -671,15 +715,25 @@ def create_tunnel_page(form_id: str, data: TunnelPageCreate, db: Session = Depen
     pages = sorted(tunnel.pages, key=lambda item: item.position)
     if len(pages) >= 20:
         raise HTTPException(422, "Le tunnel est limité à 20 pages")
-    if data.role == "landing":
-        title = data.name.strip() or "Bienvenue"
+    template = None
+    if data.template_page_id:
+        template = next((item for item in pages if item.id == data.template_page_id and item.role == data.role), None)
+        if not template:
+            raise HTTPException(422, "Le modèle doit être une page du même type dans ce tunnel")
+    name = data.name.strip() or ("Page de présentation" if data.role == "landing" else "Nouvelle collecte")
+    if template:
+        html = template.draft_html or template.html
+    elif data.role == "landing":
+        title = name
         html = f'<main><h1>{escape(title)}</h1><p>Découvrez notre proposition.</p><button data-sillage-next="" type="button">Continuer</button></main>'
+    else:
+        html = blank_form_html(name)
+    if data.role == "landing":
         next_page_id = tunnel.entry_page_id
         position = 0
         for page in pages:
             page.position += 1
     else:
-        html = form_page(form).html
         thanks = next((page for page in pages if page.role == "thanks"), None)
         next_page_id = thanks.id if thanks else None
         position = thanks.position if thanks else max((page.position for page in pages), default=-1) + 1
@@ -687,7 +741,8 @@ def create_tunnel_page(form_id: str, data: TunnelPageCreate, db: Session = Depen
             if item.position >= position:
                 item.position += 1
     cleaned, manifest = prepare_page(html, require_form=data.role == "form")
-    page = Page(tunnel_id=tunnel.id, role=data.role, position=position,
+    page = Page(tunnel_id=tunnel.id, name=name, role=data.role, position=position,
+                slug=unique_page_slug(db, name),
                 next_page_id=next_page_id, html=cleaned, manifest=manifest)
     db.add(page)
     db.flush()
@@ -712,12 +767,29 @@ def update_tunnel_page(form_id: str, page_id: str, data: TunnelPageUpdate, db: S
     changes = data.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(422, "Aucune modification transmise")
+    if changes.get("name") and page.role != "thanks" and page.id != form.id:
+        page.name = changes["name"]
+        page.slug = unique_page_slug(db, changes["name"], exclude_page_id=page.id)
+    if "settings" in changes:
+        if page.role != "thanks":
+            raise HTTPException(422, "Seule la page de remerciement accepte ces réglages")
+        new_settings = changes["settings"]
+        current_settings = page.settings or {}
+        current_state = {**published_state(form), "thank_you": current_settings}
+        if page.html == converted_html(form, current_state, role="thanks")[0]:
+            next_state = {**current_state, "thank_you": new_settings}
+            page.html, page.manifest = converted_html(form, next_state, role="thanks")
+        page.settings = new_settings
+        form.thank_you = {}
     if "next_page_id" in changes:
         target_id = changes["next_page_id"]
         if target_id is not None and target_id not in {item.id for item in tunnel.pages if item.id != page.id}:
             raise HTTPException(422, "La page suivante doit appartenir au même tunnel")
-        if target_id and page.role != "form" and next(item for item in tunnel.pages if item.id == target_id).role == "thanks":
-            raise HTTPException(422, "Le remerciement suit une soumission de formulaire")
+        target_page = next((item for item in tunnel.pages if item.id == target_id), None) if target_id else None
+        if target_page and page.role != "form" and target_page.role == "thanks":
+            has_prior_form = any(item.role == "form" and item.position < page.position for item in tunnel.pages)
+            if not has_prior_form:
+                raise HTTPException(422, "Le remerciement suit une soumission de formulaire")
         cursor = target_id
         seen = {page.id}
         lookup = {item.id: item for item in tunnel.pages}
@@ -732,8 +804,11 @@ def update_tunnel_page(form_id: str, page_id: str, data: TunnelPageUpdate, db: S
         ordered.insert(min(changes["position"], len(ordered)), page)
         if ordered[0].role == "thanks":
             raise HTTPException(422, "Le remerciement ne peut pas être la première page")
+        if any(item.role == "thanks" for item in ordered[:-1]):
+            raise HTTPException(422, "La page de remerciement doit rester à la fin du tunnel")
         for index, item in enumerate(ordered):
             item.position = index
+            item.next_page_id = ordered[index + 1].id if index + 1 < len(ordered) else None
         tunnel.entry_page_id = ordered[0].id
     db.commit()
     db.refresh(tunnel)
@@ -908,9 +983,16 @@ def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depe
     tunnel = form_tunnel(db, form)
     if not form.draft and not any(item.draft_html for item in tunnel.pages):
         raise HTTPException(422, "Aucune modification à publier")
+    thanks = form_page(form, "thanks")
+    previous_thanks = thank_you_settings(form)
+    previous_thanks_html = converted_html(form, {**published_state(form), "thank_you": previous_thanks}, role="thanks")[0]
+    draft_thanks_settings = (form.draft or {}).get("thank_you")
     for key, value in (form.draft or {}).items():
         if key in EDITABLE_KEYS:
-            setattr(form, key, value)
+            if key == "thank_you":
+                thanks.settings = value
+            else:
+                setattr(form, key, value)
     if page.draft_html:
         page.html, page.manifest = prepare_page(page.draft_html, require_form=True)
         consent_field = next((field for field in form.fields if field.get("type") == "consent"), None)
@@ -920,10 +1002,13 @@ def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depe
         form.fields = [*page.manifest, *([consent_field] if consent_field else [])]
         page.draft_html = None
         page.draft_manifest = None
-    thanks = form_page(form, "thanks")
     if thanks.draft_html:
         thanks.html = thanks.draft_html
         thanks.draft_html = None
+    elif draft_thanks_settings is not None and thanks.html == previous_thanks_html:
+        thanks.html, thanks.manifest = converted_html(
+            form, {**published_state(form), "thank_you": thanks.settings or {}}, role="thanks"
+        )
     for extra in tunnel.pages:
         if extra.id in {page.id, thanks.id} or not extra.draft_html:
             continue
@@ -982,7 +1067,7 @@ def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db)
 def duplicate_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = owned_form(form_id, db, user)
     name = f"{source.name} - copie"
-    copy = Form(campaign_id=source.campaign_id, creator_id=user.id, name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=source.thank_you, visibility="private")
+    copy = Form(campaign_id=source.campaign_id, creator_id=user.id, name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=thank_you_settings(source), visibility="private")
     db.add(copy)
     copy_form_pages(db, source, copy)
     db.commit()
@@ -1186,17 +1271,18 @@ def delete_response(response_id: str, db: Session = Depends(get_db), user: User 
 
 
 @app.get("/api/public/{slug}")
-def public_form(slug: str, db: Session = Depends(get_db)):
+def public_form(slug: str, page_id: str | None = None, db: Session = Depends(get_db)):
     form = db.scalar(select(Form).where(Form.slug == slug, Form.archived.is_(False)))
     if not form or form.campaign.archived:
         raise HTTPException(404, "Formulaire introuvable")
     c = form.campaign.company
     tunnel = form_tunnel(db, form)
-    page = db.get(Page, tunnel.entry_page_id)
-    if not page or page.tunnel_id != tunnel.id:
+    entry_page = db.get(Page, tunnel.entry_page_id)
+    page = db.get(Page, page_id) if page_id else entry_page
+    if not entry_page or entry_page.tunnel_id != tunnel.id or not page or page.tunnel_id != tunnel.id:
         raise HTTPException(404, "Page d'entrée introuvable")
     legal = consent_text(form)
-    return {"name": form.name, "description": form.description, "fields": form.fields, "design": form.design or default_design(), "content": form.content or default_content(form.kind), "thank_you": form.thank_you, "status": form.status, "html": render_page(page.html, legal), "thanks_html": "", "manifest": page.manifest, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email, "logo": c.logo}, "tunnel": {"id": tunnel.id, "entry_page_id": tunnel.entry_page_id, "pages": [{"id": item.id, "role": item.role, "position": item.position, "next_page_id": item.next_page_id, "visits": item.visits, "conversions": item.conversions} for item in sorted(tunnel.pages, key=lambda item: item.position)]}}
+    return {"name": form.name, "description": form.description, "fields": form.fields, "design": form.design or default_design(), "content": form.content or default_content(form.kind), "thank_you": thank_you_settings(form), "status": form.status, "current_page_id": page.id, "html": render_page(page.html, legal), "thanks_html": "", "manifest": page.manifest, "company": {"name": c.name, "legal_name": c.legal_name, "address": c.address, "primary_color": c.primary_color, "accent_color": c.accent_color, "dpo_email": c.dpo_email, "logo": c.logo}, "tunnel": {"id": tunnel.id, "entry_page_id": tunnel.entry_page_id, "pages": [{"id": item.id, "role": item.role, "position": item.position, "next_page_id": item.next_page_id, "visits": item.visits, "conversions": item.conversions} for item in sorted(tunnel.pages, key=lambda item: item.position)]}}
 
 
 def live_form(slug: str, db: Session) -> Form | None:
@@ -1273,8 +1359,10 @@ def advance_public_page(slug: str, data: PublicPageAdvance, request: Request, re
         raise HTTPException(403, "Étape inaccessible")
     current = db.get(Page, data.from_page_id)
     target = db.get(Page, current.next_page_id) if current and current.tunnel_id == tunnel.id and current.next_page_id else None
-    if not target or target.tunnel_id != tunnel.id or target.role == "thanks":
+    if not target or target.tunnel_id != tunnel.id:
         raise HTTPException(422, "Aucune étape suivante disponible")
+    if target.role == "thanks" and not journey.get("submitted"):
+        raise HTTPException(422, "Le remerciement suit une soumission de formulaire")
     visited = list(journey.get("visited", []))
     if target.id not in visited:
         current.conversions += 1
@@ -1306,6 +1394,8 @@ def submit(slug: str, data: SubmitResponse, request: Request, response: Response
     missing = [field["label"] for field in required if data.answers.get(field["name"]) in (None, "", [])]
     if missing:
         raise HTTPException(422, f"Champs requis : {', '.join(missing)}")
+    if not any(field.get("type") != "consent" for field in page.manifest):
+        raise HTTPException(422, "Ajoutez au moins un champ avant de collecter une réponse")
     if not data.consent:
         raise HTTPException(422, "Le consentement est requis")
     row = FormResponse(form_id=form.id, answers=data.answers, source=data.source, promo_code=data.promo_code, consent=data.consent, consent_text=consent_text(form), ip_address=request.client.host if request.client else "", user_agent=request.headers.get("user-agent", "")[:300])
@@ -1326,7 +1416,7 @@ def submit(slug: str, data: SubmitResponse, request: Request, response: Response
                                "visited": visited, "submitted": True, "response_id": row.id})
     return {
         "id": row.id,
-        "thank_you": form.thank_you,
+        "thank_you": thank_you_settings(form),
         "next_page_id": next_page.id if next_page else None,
         "thanks_html": render_page(next_page.html, "", data.answers) if next_page else "",
         "html": render_page(next_page.html, consent_text(form), data.answers) if next_page else "",

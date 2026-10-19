@@ -82,10 +82,28 @@ def upgrade(connection):
     if legacy:
         split_campaigns_into_forms(connection)
 
+    add_column(connection, "pages", "name", "VARCHAR(140)")
+    add_column(connection, "pages", "settings", "JSON")
     connection.execute(text("UPDATE form_versions SET images = '[]' WHERE images IS NULL"))
     upgrade_pages_for_tunnels(connection)
     migrate_forms_to_pages(connection)
     migrate_forms_to_tunnels(connection)
+    connection.execute(text(
+        "UPDATE pages SET name = (SELECT forms.name FROM forms WHERE forms.id = pages.form_id) "
+        "WHERE name IS NULL AND role = 'form' AND form_id IS NOT NULL"
+    ))
+    connection.execute(text("UPDATE pages SET name = 'Page de remerciement' WHERE name IS NULL AND role = 'thanks'"))
+    connection.execute(text("UPDATE pages SET name = 'Page de présentation' WHERE name IS NULL AND role = 'landing'"))
+    connection.execute(text("UPDATE pages SET name = 'Étape' WHERE name IS NULL"))
+    connection.execute(text(
+        "UPDATE pages SET settings = (SELECT forms.thank_you FROM forms WHERE forms.id = pages.form_id) "
+        "WHERE settings IS NULL AND role = 'thanks' AND form_id IS NOT NULL"
+    ))
+    connection.execute(text("UPDATE pages SET settings = '{}' WHERE settings IS NULL"))
+    connection.execute(text(
+        "UPDATE forms SET thank_you = '{}' WHERE id IN "
+        "(SELECT form_id FROM pages WHERE role = 'thanks' AND form_id IS NOT NULL)"
+    ))
 
 
 def upgrade_pages_for_tunnels(connection):
@@ -216,9 +234,9 @@ def migrate_forms_to_pages(connection):
                     legacy_to_html({**state, **draft}, company, role="thanks"), require_form=False
                 )
             connection.execute(pages.insert().values(
-                id=thanks_id, form_id=form_id, slug=None, role="thanks", position=1,
+                id=thanks_id, form_id=form_id, name="Page de remerciement", slug=None, role="thanks", position=1,
                 next_page_id=None, html=thanks_html, draft_html=draft_thanks_html,
-                manifest=thanks_manifest, draft_manifest=draft_thanks_manifest,
+                manifest=thanks_manifest, draft_manifest=draft_thanks_manifest, settings=form["thank_you"] or {},
                 visits=response_count, conversions=0,
                 created_at=form["created_at"], updated_at=form["updated_at"],
             ))
@@ -232,9 +250,9 @@ def migrate_forms_to_pages(connection):
                     legacy_to_html({**state, **draft}, company), require_form=True
                 )
             connection.execute(pages.insert().values(
-                id=form_id, form_id=form_id, slug=form["slug"], role="form", position=0,
+                id=form_id, form_id=form_id, name=form["name"], slug=form["slug"], role="form", position=0,
                 next_page_id=thanks_id, html=html, draft_html=draft_html,
-                manifest=manifest, draft_manifest=draft_manifest,
+                manifest=manifest, draft_manifest=draft_manifest, settings={},
                 visits=form["visits"] or 0, conversions=response_count,
                 created_at=form["created_at"], updated_at=form["updated_at"],
             ))

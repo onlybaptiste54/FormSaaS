@@ -49,7 +49,10 @@ def test_survey_generation_stays_short_and_rgpd_ready():
     assert len(campaign["fields"]) <= 6
     assert campaign["fields"][-1]["type"] == "consent"
     assert campaign["fields"][-1]["required"] is True
-    assert campaign["design"] == DESIGN
+    assert campaign["design"] == {
+        **DESIGN, "layout": "minimal", "density": "airy", "field_style": "underline",
+        "button_style": "soft", "heading_align": "center",
+    }
     assert campaign["content"]["eyebrow"] == "VOTRE AVIS COMPTE"
 
 
@@ -304,12 +307,25 @@ def test_generate_page_requests_a_complete_document():
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         stable = json.loads(payload["input"][0]["content"][0]["text"])
-        assert stable["brief_initial"] == {"prompt": "Un contact", "context": "Artisan"}
+        assert stable["brief_initial"] == {
+            "prompt": "Un contact",
+            "context": "Artisan",
+            "name": "Demande de rendez-vous",
+            "description": "Un premier échange avec notre équipe.",
+            "website_url": "https://atelier.example/",
+        }
+        assert payload["tools"] == [{"type": "web_search", "search_context_size": "low"}]
+        assert payload["tool_choice"] == "required"
         current = json.loads(payload["input"][-1]["content"][0]["text"])
         assert current["current_html"] == ""
         return _page_response("Page créée.", PAGE)
 
-    result = generate_page("Un contact", "Atelier Test", context="Artisan", api_key="test-key", transport=httpx.MockTransport(handler))
+    result = generate_page(
+        "Un contact", "Atelier Test", form_name="Demande de rendez-vous",
+        description="Un premier échange avec notre équipe.", context="Artisan",
+        website_url="https://atelier.example/", api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
     assert result["html"] == PAGE
     assert result["region"] is None
 

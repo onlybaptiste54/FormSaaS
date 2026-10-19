@@ -533,3 +533,25 @@ header h1{{font-family:{_FONTS.get(style['heading_font'],_FONTS['serif'])};font-
                 f'<div class="public-fields">{fields}</div><button class="public-submit" type="submit" data-luna-id="submit">{_text(content["submit_label"])}</button>'
                 f'<p class="secure-note" data-luna-id="trust">{_text(content["trust_note"])}</p>{footer}</form>')
     return f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{css}</style></head><body>{body}</body></html>'
+
+
+def blank_form_html(title: str) -> str:
+    """Build an editable empty form canvas without copying the current page."""
+    body = (
+        '<main data-sillage-region="page">'
+        '<form data-sillage="form" data-luna-id="card">'
+        f'<header data-sillage-region="intro"><h1 data-luna-id="title">{_text(title)}</h1>'
+        '<p data-luna-id="description"></p></header>'
+        '<div data-sillage-region="fields"><div data-sillage="consent"></div></div>'
+        '<button type="submit" data-luna-id="submit">Envoyer ma réponse</button>'
+        '</form></main>'
+    )
+    css = """
+*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:40px 20px;font-family:system-ui,sans-serif;color:#17211b;background:#f4f4ee}
+main{width:min(720px,100%);margin:8vh auto}form{display:grid;gap:24px}header{max-width:520px}h1{font-size:clamp(30px,5vw,48px);line-height:1.08;margin:0 0 12px}header p{color:#566159;line-height:1.6}
+[data-sillage-region=fields]{display:grid;gap:18px}.public-field{display:grid;gap:7px;font-size:14px}.public-field input:not([type=radio]),.public-field textarea,.public-field select{width:100%;min-height:44px;padding:10px 12px;border:1px solid #ccd2ca;border-radius:7px;background:#fff;color:inherit;font:inherit}.public-field textarea{min-height:100px}
+fieldset{padding:0;border:0}.choices{display:flex;flex-wrap:wrap;gap:10px}.choice{display:flex;align-items:center;gap:7px}
+button{justify-self:start;min-height:46px;padding:0 24px;border:0;border-radius:7px;background:#17211b;color:#fff;font:inherit;font-weight:700;cursor:pointer}
+@media(max-width:600px){body{padding:24px 16px}main{margin:4vh auto}button{width:100%}}
+"""
+    return f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{css}</style></head><body>{body}</body></html>'

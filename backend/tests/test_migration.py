@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import tempfile
 
@@ -68,6 +69,11 @@ def test_existing_links_responses_and_history_survive_the_migration(monkeypatch)
             assert connection.exec_driver_sql("SELECT name FROM campaigns ORDER BY id").scalars().all() == ["Contact site principal", "Inscription portes ouvertes"]
             assert connection.exec_driver_sql("SELECT form_id FROM responses").scalar() == "camp1"
             assert connection.exec_driver_sql("SELECT form_id, source FROM form_versions").fetchall() == [("camp1", "publish")]
+            assert connection.exec_driver_sql("SELECT thank_you FROM forms WHERE id = 'camp1'").scalar() == "{}"
+            thanks_settings = connection.exec_driver_sql(
+                "SELECT settings FROM pages WHERE form_id = 'camp1' AND role = 'thanks'"
+            ).scalar()
+            assert json.loads(thanks_settings) == {"title": "Merci", "message": "Bien reçu"}
             assert connection.exec_driver_sql("SELECT screenshot_data_url, images FROM form_versions WHERE id = 'v1'").one() == (None, "[]")
             tunnels = connection.exec_driver_sql(
                 "SELECT id, campaign_id, name, slug, status, entry_page_id FROM tunnels ORDER BY campaign_id"
