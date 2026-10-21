@@ -208,6 +208,31 @@ def _declarations(css: str):
             yield node.lower_name, tinycss2.serialize(node.value).strip()
 
 
+def _saturation_lightness(couleur: str) -> tuple[float, float]:
+    rouge, vert, bleu = (int(couleur[index:index + 2], 16) / 255 for index in (1, 3, 5))
+    haut, bas = max(rouge, vert, bleu), min(rouge, vert, bleu)
+    clarte = (haut + bas) / 2
+    if haut == bas:
+        return 0.0, clarte
+    ecart = haut - bas
+    return ecart / (2 - haut - bas if clarte > 0.5 else haut + bas), clarte
+
+
+def accent_color(couleurs: list[dict]) -> str | None:
+    """La couleur qui signe la marque, pas celle qui occupe le plus de surface.
+
+    Un site est surtout fait de blanc, de noir et de gris : les classer par
+    fréquence met donc le neutre en tête et relègue la couleur distinctive au
+    troisième rang, où elle finit en garniture. On écarte les neutres et on
+    garde la teinte franche la plus employée.
+    """
+    for couleur in couleurs:
+        saturation, clarte = _saturation_lightness(couleur["value"])
+        if saturation >= 0.25 and 0.12 <= clarte <= 0.88:
+            return couleur["value"]
+    return None
+
+
 def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
     """Les faits bruts du site : couleurs par rôle, polices, titre, intertitres."""
     page = _Page()
@@ -239,6 +264,7 @@ def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
 
     return {
         "url": url,
+        "accent": accent_color(couleurs),
         "title": page.title,
         "description": page.description,
         "headings": page.headings,

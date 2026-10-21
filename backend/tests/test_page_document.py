@@ -1,6 +1,6 @@
 import pytest
 
-from app.page_document import MAX_PAGE_HTML, legacy_to_html, meta_discourse, prepare_page, render_page
+from app.page_document import MAX_PAGE_HTML, legacy_to_html, markdown_leftovers, meta_discourse, prepare_page, render_page, strip_tracking
 
 
 def _form(inner: str) -> str:
@@ -206,3 +206,33 @@ def test_meta_discourse_ignores_style_and_handles_typographic_apostrophe():
     droite = meta_discourse("<p>Le contenu s'appuie sur leur site.</p>")
     courbe = meta_discourse("<p>Le contenu s’appuie sur leur site.</p>")
     assert len(droite) == 1 and len(courbe) == 1
+
+
+def test_markdown_leftovers_catches_what_the_visitor_should_never_read():
+    """Le cas observe : un lien Markdown rendu en clair, utm compris."""
+    page = ('<p>On vous aide. ([smartduck.fr](https://smartduck.fr/offre/?utm_source=openai))</p>'
+            '<p>Voir https://smartduck.fr/nos-centres/</p><p>Un mot **important**.</p>')
+    fautifs = markdown_leftovers(page)
+    assert any(f.startswith("[smartduck.fr](") for f in fautifs)
+    assert any(f == "**important**" for f in fautifs)
+    assert any("nos-centres" in f for f in fautifs)
+
+
+def test_markdown_leftovers_accepts_a_real_link():
+    assert markdown_leftovers('<p>Voir le <a href="https://smartduck.fr/">site de smartduck</a>.</p>') == []
+    assert markdown_leftovers('<style>a{color:red}</style><p>Bonjour</p>') == []
+
+
+def test_strip_tracking_keeps_the_useful_parameters():
+    assert strip_tracking("https://x.fr/a?utm_source=openai&id=7&fbclid=zz") == "https://x.fr/a?id=7"
+    assert strip_tracking("https://x.fr/b") == "https://x.fr/b"
+    assert strip_tracking("https://x.fr/c?page=2") == "https://x.fr/c?page=2"
+
+
+def test_prepare_page_removes_tracking_from_stored_links():
+    """Un utm_source=openai annoncerait aux prospects d'ou vient le texte."""
+    source = _form('<a href="https://smartduck.fr/offre/?utm_source=openai&amp;id=3">Nos offres</a>'
+                   '<input name="email" type="email">')
+    document, _ = prepare_page(source, require_form=True)
+    assert "utm_source" not in document
+    assert "id=3" in document

@@ -414,7 +414,12 @@ def creation_identity(source: str, website_url: str, company: Company) -> dict:
         model=settings.openai_model,
         timeout_seconds=settings.openai_timeout_seconds,
     )
-    return {"name": nom, "tone": profile["tone"], "brand": profile}
+    identite = {"name": nom, "tone": profile["tone"], "brand": profile}
+    # L'accent calcule sur le site vaut mieux que le premier element de la
+    # palette, qui est presque toujours un blanc ou un noir de structure.
+    if accent := facts.get("accent"):
+        identite["accent_color"] = accent
+    return identite
 
 
 def page_identity(form: Form) -> dict:

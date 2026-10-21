@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
-from .page_document import MAX_PAGE_HTML, meta_discourse
+from .page_document import MAX_PAGE_HTML, markdown_leftovers, meta_discourse
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+Tu ecris du HTML, jamais du Markdown : pas de [texte](url), pas de **gras**, pas de # titre. Une source se cite par un <a href="..."> dont le texte est lisible, par exemple le nom du site, et jamais par une URL ecrite en clair dans le texte. N'ajoute aucun parametre de suivi aux liens.
 La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
 La page sera assainie et validée par le serveur avant stockage. N'extrais aucune donnée personnelle des images.
 """
@@ -348,7 +349,7 @@ Déduis-en un profil de marque exploitable pour une page de collecte :
 - rules_do et rules_avoid : consignes courtes et concrètes, tirées de ce que tu lis.
 - summary : une phrase qui résume l'identité.
 
-Une couleur fréquente n'est pas forcément la couleur de marque : le blanc, le noir et les gris servent surtout de fond et de texte, et la couleur d'accent est souvent moins fréquente qu'eux. Garde quand même un fond et une couleur de texte dans la palette, la page en a besoin. N'affirme rien sur l'activité de l'entreprise que les faits ne montrent pas.
+Le champ accent donne la teinte qui signe la marque, calculee a partir du site : place-la dans la palette et traite-la comme la couleur d'accent, meme si elle est moins frequente que les neutres. Une couleur frequente n'est pas forcement la couleur de marque : le blanc, le noir et les gris servent surtout de fond et de texte. Garde quand même un fond et une couleur de texte dans la palette, la page en a besoin. N'affirme rien sur l'activité de l'entreprise que les faits ne montrent pas.
 """
 
 
@@ -761,6 +762,11 @@ def revise_page(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
                     "Retire ou reecris ces passages : " + " / ".join(bavardage)
                 )
+            if attempt == 1 and (bruts := markdown_leftovers(result.html)):
+                raise ValueError(
+                    "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
+                    "Remplace-les par un lien <a href> au texte lisible : " + " / ".join(bruts)
+                )
         except (ValidationError, ValueError) as exc:
             correction = str(exc)
             logger.warning("Luna page refused (attempt %s): %s", attempt, correction[:200])
@@ -770,6 +776,8 @@ def revise_page(
         logger.info("Luna page produced in %.1fs, attempt %s, %s tokens", time.monotonic() - started, attempt, (response.get("usage") or {}).get("total_tokens", "?"))
         if reste := meta_discourse(result.html):
             logger.warning("Luna page keeps meta discourse: %s", " / ".join(reste)[:200])
+        if bruts := markdown_leftovers(result.html):
+            logger.warning("Luna page keeps raw markdown or urls: %s", " / ".join(bruts)[:200])
         return result.model_dump()
     raise LunaAPIError("Luna n'a pas pu produire une page valide.")
 
@@ -901,6 +909,11 @@ def stream_page_revision(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
                     "Retire ou reecris ces passages : " + " / ".join(bavardage)
                 )
+            if attempt == 1 and (bruts := markdown_leftovers(result.html)):
+                raise ValueError(
+                    "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
+                    "Remplace-les par un lien <a href> au texte lisible : " + " / ".join(bruts)
+                )
         except (ValidationError, ValueError, LunaAPIError) as exc:
             correction = str(exc)
             if attempt == 2:
@@ -909,6 +922,8 @@ def stream_page_revision(
             continue
         if reste := meta_discourse(result.html):
             logger.warning("Luna page keeps meta discourse: %s", " / ".join(reste)[:200])
+        if bruts := markdown_leftovers(result.html):
+            logger.warning("Luna page keeps raw markdown or urls: %s", " / ".join(bruts)[:200])
         yield {"type": "final", **result.model_dump()}
         return
 

@@ -10,6 +10,7 @@ from html import escape
 from html.parser import HTMLParser
 import re
 import unicodedata
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import bleach
 import tinycss2
@@ -364,6 +365,7 @@ def prepare_page(html: str, *, require_form: bool) -> tuple[str, list[dict]]:
     cleaned = bleach.clean(guarded, tags=_TAGS, attributes=_allowed_attr,
                            protocols={"https", "data"}, strip=True,
                            strip_comments=True, css_sanitizer=_PageCSS())
+    cleaned = _clean_links(cleaned)
     manifest = _manifest(cleaned, require_form=require_form)
     document = f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>{cleaned}</body></html>'
     if len(document) > MAX_PAGE_HTML:
@@ -640,3 +642,52 @@ def meta_discourse(html: str) -> list[str]:
             if any(marqueur in plat for marqueur in marqueurs) and phrase not in fautifs:
                 fautifs.append(phrase[:160])
     return fautifs[:6]
+
+
+# --- Markdown et parametres de suivi -----------------------------------------
+#
+# Luna ecrit parfois un lien en Markdown dans un document HTML : le visiteur lit
+# alors « ([smartduck.fr](https://smartduck.fr/?utm_source=openai)) », crochets
+# et URL compris. L'outil de recherche web ajoute de son cote un utm_source qui
+# annonce aux prospects d'ou vient le texte.
+
+_MARKDOWN_LINK = re.compile(r"\[[^\]\r\n]{1,120}\]\(\s*<?https?://[^)\s]+>?\s*\)")
+_MARKDOWN_EMPHASIS = re.compile(r"\*\*[^*\r\n]{2,80}\*\*")
+_BARE_URL = re.compile(r"(?<![\w@])https?://\S{4,}")
+_TRACKING = re.compile(r"^(utm_|mc_|_hs|pk_|piwik_)|^(gclid|fbclid|msclkid|igshid|ref_src|yclid)$", re.IGNORECASE)
+
+
+def markdown_leftovers(html: str) -> list[str]:
+    """Passages ou la page montre du Markdown ou une URL brute au visiteur."""
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # un HTML casse est traite ailleurs
+        return []
+
+    fautifs: list[str] = []
+    for chunk in parser.chunks:
+        for motif in (_MARKDOWN_LINK, _MARKDOWN_EMPHASIS, _BARE_URL):
+            for trouve in motif.findall(chunk):
+                extrait = (trouve if isinstance(trouve, str) else trouve[0])[:160]
+                if extrait not in fautifs:
+                    fautifs.append(extrait)
+    return fautifs[:6]
+
+
+def strip_tracking(url: str) -> str:
+    """Retire les parametres de suivi d'une URL, en gardant le reste intact."""
+    if "?" not in url:
+        return url
+    parts = urlsplit(url)
+    gardes = [(cle, valeur) for cle, valeur in parse_qsl(parts.query, keep_blank_values=True)
+              if not _TRACKING.match(cle)]
+    return urlunsplit(parts._replace(query=urlencode(gardes)))
+
+
+def _clean_links(html: str) -> str:
+    """Nettoie les URL des attributs du document deja assaini."""
+    return re.sub(r'(href|src)="([^"]*)"',
+                  lambda found: f'{found.group(1)}="{escape(strip_tracking(found.group(2)), quote=True)}"',
+                  html)

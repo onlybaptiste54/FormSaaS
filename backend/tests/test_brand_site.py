@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.brand_site import SiteError, _families, check_url, extract, read_site, site_name
+from app.brand_site import SiteError, _families, accent_color, check_url, extract, read_site, site_name
 from app.luna import LunaAPIError, analyze_site_brand
 
 
@@ -134,3 +134,16 @@ def test_site_name_keeps_the_brand_and_drops_the_promise():
     assert site_name({"title": "Bienvenue sur le site officiel de la menuiserie artisanale du Grand Ouest",
                       "url": "https://www.menuiserie-ouest.fr/"}) == "menuiserie-ouest"
     assert site_name({"title": "", "url": "https://smartduck.fr/"}) == "smartduck"
+
+
+def test_accent_color_skips_the_neutrals_that_cover_a_site():
+    """Classer par frequence met le blanc en tete et relegue la signature."""
+    releve = [{"value": "#ffffff"}, {"value": "#000000"}, {"value": "#5b2d8b"},
+              {"value": "#69727d"}, {"value": "#d9534f"}]
+    assert accent_color(releve) == "#5b2d8b"
+    assert accent_color([{"value": "#ffffff"}, {"value": "#333333"}]) is None
+
+
+def test_extract_names_the_accent_of_the_site():
+    faits = extract(PAGE, [FEUILLE], url="https://smartduck.fr/")
+    assert faits["accent"] == "#7a3ff2"
