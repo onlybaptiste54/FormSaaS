@@ -37,6 +37,7 @@ class LunaPage(BaseModel):
 
 LUNA_PAGE_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de Sillage.
 Tu écris directement le HTML et le CSS responsive d'une page française, à partir du brief, de l'identité, de la page actuelle et de la demande. Tu disposes de la recherche web.
+Avant tout, tranche sur l'intention, jamais sur la ponctuation. Un message qui demande une explication, qui reproche ou qui constate sans dire quoi changer : reponds dans message, renvoie html vide et region null, la page reste intacte. Reponds alors vraiment a ce qui est demande (d'ou vient une information, pourquoi tu as fait tel choix) et n'en profite pas pour corriger autre chose au passage. Un message qui demande un changement est une consigne a appliquer, meme s'il est poli et se termine par un point d'interrogation : « tu peux mettre le bouton en bleu ? » se fait, sans discuter et sans le faire remarquer. Le champ formulation_interrogative signale seulement la forme du message, pas son intention. Quand tu modifies, ne touche qu'a ce qui est vise et laisse le reste mot pour mot.
 Réponds exclusivement avec le JSON du schéma : message (une phrase en français), html (la page entière ou un fragment) et region (nom de région ou null).
 
 La page est un document HTML complet avec <!doctype html>, <html lang="fr">, <head>, un seul <style> et <body>. Écris une direction artistique affirmée et une composition propre à cette demande, adaptée à la marque, au mobile et au bureau. Une page de collecte n'est pas forcément une carte blanche avec les champs empilés : choisis une composition éditoriale adaptée, avec un vrai titre, une proposition claire et un formulaire bien intégré. Limite le formulaire à cinq champs métier, en plus du consentement injecté par le serveur. Évite les titres interchangeables, le texte de remplissage et les éléments de confiance inventés. Ne reproduis pas le même squelette visuel d'une demande à l'autre. Pas de JavaScript, de balise script, iframe, object, embed, d'attribut on*, de CSS @import ou d'URL externe dans le CSS. Les images peuvent utiliser uniquement des URL https ou data:image fournies. Les ressources non fournies ne doivent pas être inventées.
@@ -44,7 +45,6 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
-Quand le message de l'utilisateur est une question, un reproche, un constat ou une demande que tu ne peux pas traduire en un changement precis, reponds-lui dans message et renvoie html vide avec region null : la page reste intacte. Ne refonds jamais la page pour repondre a « pourquoi ... ? » ou a « tu fais n'importe quoi ». Demande ce qu'il faut changer. Quand il demande un changement, ne touche qu'a ce qu'il vise et laisse le reste mot pour mot.
 identity.images liste les visuels du site de la marque, avec leur texte alternatif : tu peux les placer dans la page par <img src="..." alt="...">, en reprenant l'URL exactement. Sers-t'en pour donner du corps a la page, un visuel d'accroche par exemple. N'utilise aucune autre image : toute URL qui ne vient pas de cette liste est refusee.
 Tu ecris du HTML, jamais du Markdown : pas de [texte](url), pas de **gras**, pas de # titre. Une source se cite par un <a href="..."> dont le texte est lisible, par exemple le nom du site, et jamais par une URL ecrite en clair dans le texte. N'ajoute aucun parametre de suivi aux liens.
 La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
@@ -639,6 +639,37 @@ def _validate_page_result(result: LunaPage) -> None:
         raise ValueError("Le fragment doit ouvrir et fermer sur sa région data-sillage-region.")
 
 
+_INTERROGATIFS = (
+    "pourquoi", "comment", "c'est quoi", "qu'est-ce", "quoi", "qui", "quand", "ou est",
+    "d'ou", "ca vient d'ou", "combien", "est-ce que", "explique", "tu peux me dire",
+    "dis-moi", "a quoi", "c'est qui", "c'est ou",
+)
+
+_REPROCHES = (
+    # « importe quoi » couvre les apostrophes droites, courbes et absentes.
+    "importe quoi", "tu ne l'as pas fait", "tu n'as pas", "c'est nul",
+    "c'est moche", "c'est debile", "ca va pas", "ca ne va pas", "degueu", "c'est rate",
+)
+
+
+def looks_like_question(instruction: str) -> bool:
+    """Le message demande-t-il une explication plutot qu'une modification ?
+
+    Sert d'indice au modele, pas de verdict : une question peut porter une
+    vraie demande (tu peux mettre le bouton en bleu ?), et c'est lui qui
+    tranche. Mais sans cet indice, « ca vient d'ou les infos ? » finissait en
+    retouche de la page.
+    """
+    texte = unicodedata.normalize("NFKD", (instruction or "").strip().lower())
+    texte = "".join(c for c in texte if not unicodedata.combining(c))
+    texte = texte.replace("’", "'")
+    if not texte:
+        return False
+    return (texte.endswith("?")
+            or any(texte.startswith(mot) for mot in _INTERROGATIFS)
+            or any(mot in texte for mot in _REPROCHES))
+
+
 def _page_request(
     *,
     html: str,
@@ -688,6 +719,10 @@ def _page_request(
     current = {
         "current_html": html,
         "instruction": instruction,
+        # Signale la forme du message, pas son intention : nommer ce champ
+        # « est une question » le transformait en ordre de ne rien faire, et une
+        # demande polie finissait refusee au motif qu'elle portait un « ? ».
+        "formulation_interrogative": looks_like_question(instruction),
         "selection": selection,
         "page_stats": stats or {},
     }

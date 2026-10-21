@@ -453,3 +453,21 @@ def test_a_region_other_than_the_selected_one_is_still_refused():
             api_key="test-key", transport=httpx.MockTransport(handler),
         )
     assert len(appels) == 2
+
+
+def test_looks_like_question_describes_the_form_not_the_intent():
+    """L'indice decrit la formulation ; c'est le modele qui juge l'intention.
+
+    « Tu peux mettre le bouton en bleu ? » est donc bien repere comme
+    interrogatif, et reste une consigne a appliquer.
+    """
+    from app.luna import looks_like_question
+
+    for demande in ["Ça vient d’où les infos là ?", "Pourquoi il y a du vide en dessous",
+                    "Tu fais n’importe quoi", "Comment tu as choisi les couleurs",
+                    "Non, tu ne l’as pas fait", "Tu peux mettre le bouton en bleu ?"]:
+        assert looks_like_question(demande), demande
+
+    for ordre in ["Mets le bouton d’envoi en vert sapin", "supprime ça",
+                  "Raccourcis le titre principal", "Ajoute une section tarifs", ""]:
+        assert not looks_like_question(ordre), ordre
