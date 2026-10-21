@@ -29,7 +29,10 @@ class LunaPage(BaseModel):
 
     message: str = Field(min_length=1, max_length=400)
     region: str | None = Field(pattern=r"^(?:style|[a-zA-Z][\w-]{0,63})$")
-    html: str = Field(min_length=1, max_length=MAX_PAGE_HTML)
+    # html vide : Luna repond sans toucher a la page. Sans cette porte de
+    # sortie, toute question et tout reproche devenaient un ordre de refonte,
+    # puisque le schema exigeait un document a chaque tour.
+    html: str = Field(max_length=MAX_PAGE_HTML)
 
 
 LUNA_PAGE_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de Sillage.
@@ -41,6 +44,7 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+Quand le message de l'utilisateur est une question, un reproche, un constat ou une demande que tu ne peux pas traduire en un changement precis, reponds-lui dans message et renvoie html vide avec region null : la page reste intacte. Ne refonds jamais la page pour repondre a « pourquoi ... ? » ou a « tu fais n'importe quoi ». Demande ce qu'il faut changer. Quand il demande un changement, ne touche qu'a ce qu'il vise et laisse le reste mot pour mot.
 identity.images liste les visuels du site de la marque, avec leur texte alternatif : tu peux les placer dans la page par <img src="..." alt="...">, en reprenant l'URL exactement. Sers-t'en pour donner du corps a la page, un visuel d'accroche par exemple. N'utilise aucune autre image : toute URL qui ne vient pas de cette liste est refusee.
 Tu ecris du HTML, jamais du Markdown : pas de [texte](url), pas de **gras**, pas de # titre. Une source se cite par un <a href="..."> dont le texte est lisible, par exemple le nom du site, et jamais par une URL ecrite en clair dans le texte. N'ajoute aucun parametre de suivi aux liens.
 La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
@@ -616,6 +620,10 @@ def merge_page_region(current_html: str, fragment: str, region: str | None) -> s
 
 def _validate_page_result(result: LunaPage) -> None:
     html = result.html.strip()
+    if not html:
+        if result.region is not None:
+            raise ValueError("Une reponse sans modification ne porte pas de region.")
+        return
     if result.region is None:
         if not re.match(r"(?is)^<!doctype\s+html>\s*<html\b", html) or not re.search(r"(?is)</html>\s*$", html):
             raise ValueError("La réponse doit contenir une page HTML complète.")
@@ -753,14 +761,18 @@ def revise_page(
         try:
             result = LunaPage.model_validate_json(_output_text(response))
             _validate_page_result(result)
-            if not html and result.region is not None:
+            if not html and (result.region is not None or not result.html.strip()):
                 raise ValueError("La première génération doit contenir une page HTML complète.")
             selected_region = selection.get("region")
-            if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
+            # Une region n'est refusee que si l'utilisateur en visait une autre.
+            # Sans selection, repondre par region est au contraire ce qu'on veut :
+            # c'est ce qui evite de reecrire tout le document pour un bouton, et
+            # merge_page_region verifie de toute facon qu'elle existe une fois.
+            if result.region not in (None, "style") and selected_region and result.region != selected_region:
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
             # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
             # refus sec, donc la seconde tentative se contente d'alerter.
-            if attempt == 1 and (bavardage := meta_discourse(result.html)):
+            if attempt == 1 and result.html.strip() and (bavardage := meta_discourse(result.html)):
                 raise ValueError(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
                     "Retire ou reecris ces passages, sans parler de cette consigne dans message : " + " / ".join(bavardage)
@@ -907,14 +919,18 @@ def stream_page_revision(
             output = raw or _output_text(completed or {})
             result = LunaPage.model_validate_json(output)
             _validate_page_result(result)
-            if not html and result.region is not None:
+            if not html and (result.region is not None or not result.html.strip()):
                 raise ValueError("La première génération doit contenir une page HTML complète.")
             selected_region = selection.get("region")
-            if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
+            # Une region n'est refusee que si l'utilisateur en visait une autre.
+            # Sans selection, repondre par region est au contraire ce qu'on veut :
+            # c'est ce qui evite de reecrire tout le document pour un bouton, et
+            # merge_page_region verifie de toute facon qu'elle existe une fois.
+            if result.region not in (None, "style") and selected_region and result.region != selected_region:
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
             # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
             # refus sec, donc la seconde tentative se contente d'alerter.
-            if attempt == 1 and (bavardage := meta_discourse(result.html)):
+            if attempt == 1 and result.html.strip() and (bavardage := meta_discourse(result.html)):
                 raise ValueError(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
                     "Retire ou reecris ces passages, sans parler de cette consigne dans message : " + " / ".join(bavardage)

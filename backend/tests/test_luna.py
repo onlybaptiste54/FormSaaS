@@ -422,3 +422,34 @@ def test_page_revision_keeps_a_second_attempt_that_still_describes_itself():
     )
     assert len(requests) == 2
     assert result["html"] == bavarde
+
+
+def test_a_region_is_accepted_without_a_selection():
+    """Repondre par region sans selection evite de reecrire tout le document."""
+    fragment = '<section data-sillage-region="hero"><h1>Court</h1></section>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _page_response("Titre raccourci.", fragment, "hero")
+
+    result = revise_page(
+        PAGE, "Raccourcis le titre", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Page complète"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert result["region"] == "hero"
+
+
+def test_a_region_other_than_the_selected_one_is_still_refused():
+    appels = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        appels.append(1)
+        return _page_response("Change.", '<section data-sillage-region="pied">x</section>', "pied")
+
+    with pytest.raises(LunaAPIError):
+        revise_page(
+            PAGE, "Change le titre", {"name": "Atelier Test"},
+            selection={"region": "hero", "view": "form", "element_ids": []},
+            api_key="test-key", transport=httpx.MockTransport(handler),
+        )
+    assert len(appels) == 2

@@ -835,3 +835,31 @@ def test_creating_with_a_client_site_requires_its_address(client, monkeypatch):
         "prompt": "Une page de contact pour ce client", "brand_source": "site"})
     assert refus.status_code == 422
     assert "adresse" in refus.json()["detail"].lower()
+
+
+def test_a_question_gets_an_answer_and_leaves_the_page_untouched(client, monkeypatch):
+    """Une question n'est pas un ordre de refonte : la page ne doit pas bouger."""
+    from app import main
+    from app.config import settings
+
+    form = active_form(client)
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    avant = client.get(f"/api/forms/{form['id']}").json()
+    versions_avant = len(client.get(f"/api/forms/{form['id']}/versions").json())
+
+    def fake_revision(html, instruction, identity, **kwargs):
+        return {"message": "Le vide vient de la marge du bloc. Vous voulez que je la réduise ?",
+                "html": "", "region": None}
+
+    monkeypatch.setattr(main, "revise_page", fake_revision)
+    reponse = client.post(f"/api/forms/{form['id']}/luna/refine",
+                          json={"instruction": "Pourquoi il y a du vide en dessous du formulaire ?"})
+    assert reponse.status_code == 200, reponse.text
+    resultat = reponse.json()
+
+    assert resultat["changed"] is False
+    assert resultat["version"] is None
+    assert "marge" in resultat["message"]
+    apres = client.get(f"/api/forms/{form['id']}").json()
+    assert apres["html"] == avant["html"] and apres.get("draft_html") == avant.get("draft_html")
+    assert len(client.get(f"/api/forms/{form['id']}/versions").json()) == versions_avant

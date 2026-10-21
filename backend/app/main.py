@@ -963,6 +963,12 @@ def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revisio
     db.refresh(page)
     if (page.draft_html or page.html) != expected_html:
         raise ValueError("La page a changé pendant la génération. Rechargez l'éditeur avant de réessayer.")
+
+    # Luna a repondu sans modifier la page : rien a enregistrer, et surtout pas
+    # une version qui laisserait croire a un changement.
+    if not revision["html"].strip():
+        return {"message": revision["message"], "form": form_json(db, form),
+                "version": None, "touched": [], "changed": False}
     try:
         candidate = merge_page_region(expected_html, revision["html"], revision.get("region"))
         cleaned_html, manifest = prepare_page(candidate, require_form=page.role == "form")
@@ -993,6 +999,7 @@ def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revisio
         "form": form_json(db, form),
         "version": version_json(version),
         "touched": [revision["region"]] if revision.get("region") else [],
+        "changed": True,
     }
 
 
