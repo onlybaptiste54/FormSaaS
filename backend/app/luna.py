@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
-from .page_document import MAX_PAGE_HTML, markdown_leftovers, meta_discourse
+from .page_document import MAX_PAGE_HTML, foreign_images, markdown_leftovers, meta_discourse
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+identity.images liste les visuels du site de la marque, avec leur texte alternatif : tu peux les placer dans la page par <img src="..." alt="...">, en reprenant l'URL exactement. Sers-t'en pour donner du corps a la page, un visuel d'accroche par exemple. N'utilise aucune autre image : toute URL qui ne vient pas de cette liste est refusee.
 Tu ecris du HTML, jamais du Markdown : pas de [texte](url), pas de **gras**, pas de # titre. Une source se cite par un <a href="..."> dont le texte est lisible, par exemple le nom du site, et jamais par une URL ecrite en clair dans le texte. N'ajoute aucun parametre de suivi aux liens.
 La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
 La page sera assainie et validée par le serveur avant stockage. N'extrais aucune donnée personnelle des images.
@@ -417,7 +418,7 @@ def _company_name(identity: str | dict) -> str:
 def _safe_identity(identity: str | dict) -> dict:
     if isinstance(identity, str):
         return {"name": identity}
-    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand")
+    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand", "images")
     return {key: identity[key] for key in allowed if identity.get(key)}
 
 
@@ -733,6 +734,8 @@ def revise_page(
     if len(html) > MAX_PAGE_HTML:
         raise LunaAPIError("La page actuelle est trop longue pour être modifiée.")
     safe_identity = _safe_identity(identity)
+    visuels_autorises = {str(visuel.get("url")) for visuel in (safe_identity.get("images") or [])
+                         if isinstance(visuel, dict) and visuel.get("url")}
     screenshot = _validate_screenshot(screenshot_data_url)
     attachments = [_validate_screenshot(image) for image in (images or [])[:3]]
     names = [name for name in (existing_names or []) if name not in {"consent", "sillage_consent"} and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", name)][:40]
@@ -766,6 +769,11 @@ def revise_page(
                 raise ValueError(
                     "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
                     "Remplace-les par un lien <a href> au texte lisible : " + " / ".join(bruts)
+                )
+            if attempt == 1 and (intruses := foreign_images(result.html, visuels_autorises)):
+                raise ValueError(
+                    "Ces images ne font pas partie des visuels fournis et ne peuvent pas etre utilisees : "
+                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image."
                 )
         except (ValidationError, ValueError) as exc:
             correction = str(exc)
@@ -844,6 +852,8 @@ def stream_page_revision(
     if len(html) > MAX_PAGE_HTML:
         raise LunaAPIError("La page actuelle est trop longue pour être modifiée.")
     safe_identity = _safe_identity(identity)
+    visuels_autorises = {str(visuel.get("url")) for visuel in (safe_identity.get("images") or [])
+                         if isinstance(visuel, dict) and visuel.get("url")}
     screenshot = _validate_screenshot(screenshot_data_url)
     attachments = [_validate_screenshot(image) for image in (images or [])[:3]]
     names = [name for name in (existing_names or []) if name not in {"consent", "sillage_consent"} and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", name)][:40]
@@ -913,6 +923,11 @@ def stream_page_revision(
                 raise ValueError(
                     "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
                     "Remplace-les par un lien <a href> au texte lisible : " + " / ".join(bruts)
+                )
+            if attempt == 1 and (intruses := foreign_images(result.html, visuels_autorises)):
+                raise ValueError(
+                    "Ces images ne font pas partie des visuels fournis et ne peuvent pas etre utilisees : "
+                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image."
                 )
         except (ValidationError, ValueError, LunaAPIError) as exc:
             correction = str(exc)

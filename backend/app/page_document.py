@@ -676,6 +676,28 @@ def markdown_leftovers(html: str) -> list[str]:
     return fautifs[:6]
 
 
+_IMAGE_SOURCE = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
+_CSS_IMAGE = re.compile(r"""url\(\s*['"]?(https?://[^)'"]+)""", re.IGNORECASE)
+
+
+def foreign_images(html: str, allowed: set[str]) -> list[str]:
+    """Images de la page qui ne viennent pas des visuels fournis.
+
+    Le modele n'a aucun moyen de savoir si une URL trouvee sur le web existe
+    encore, ni si elle lui appartient. Une image inventee casse la page ou
+    emprunte le bien d'autrui : on n'accepte que ce qu'on a nous-memes valide.
+    """
+    trouvees = _IMAGE_SOURCE.findall(html) + _CSS_IMAGE.findall(html)
+    intruses = []
+    for source in trouvees:
+        source = source.strip()
+        if source.startswith("data:") or source in allowed:
+            continue
+        if source not in intruses:
+            intruses.append(source[:160])
+    return intruses[:6]
+
+
 def strip_tracking(url: str) -> str:
     """Retire les parametres de suivi d'une URL, en gardant le reste intact."""
     if "?" not in url:

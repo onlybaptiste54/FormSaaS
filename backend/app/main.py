@@ -419,6 +419,10 @@ def creation_identity(source: str, website_url: str, company: Company) -> dict:
     # palette, qui est presque toujours un blanc ou un noir de structure.
     if accent := facts.get("accent"):
         identite["accent_color"] = accent
+    # Les visuels voyagent avec l'identite : Luna les retrouve a chaque retouche,
+    # et le serveur refuse toute image qui n'en vient pas.
+    if visuels := facts.get("images"):
+        identite["images"] = visuels
     return identite
 
 

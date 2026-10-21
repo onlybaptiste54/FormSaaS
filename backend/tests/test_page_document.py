@@ -1,6 +1,6 @@
 import pytest
 
-from app.page_document import MAX_PAGE_HTML, legacy_to_html, markdown_leftovers, meta_discourse, prepare_page, render_page, strip_tracking
+from app.page_document import MAX_PAGE_HTML, legacy_to_html, foreign_images, markdown_leftovers, meta_discourse, prepare_page, render_page, strip_tracking
 
 
 def _form(inner: str) -> str:
@@ -236,3 +236,14 @@ def test_prepare_page_removes_tracking_from_stored_links():
     document, _ = prepare_page(source, require_form=True)
     assert "utm_source" not in document
     assert "id=3" in document
+
+
+def test_foreign_images_only_accepts_what_was_provided():
+    autorisees = {"https://smartduck.fr/media/equipe.jpg"}
+    page = ('<img src="https://smartduck.fr/media/equipe.jpg" alt="ok">'
+            '<img src="https://ailleurs.test/vole.jpg" alt="non">'
+            '<img src="data:image/gif;base64,R0lGOD" alt="ok">'
+            '<style>.h{background:url(https://ailleurs.test/fond.jpg)}</style>')
+    assert foreign_images(page, autorisees) == ["https://ailleurs.test/vole.jpg",
+                                                "https://ailleurs.test/fond.jpg"]
+    assert foreign_images('<img src="https://smartduck.fr/media/equipe.jpg">', autorisees) == []

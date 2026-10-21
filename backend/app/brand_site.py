@@ -110,12 +110,20 @@ class _Page(HTMLParser):
         self.title = ""
         self.description = ""
         self.headings: list[str] = []
+        self.images: list[tuple[str, str]] = []
+        self.og_image = ""
         self._capture: str | None = None
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attributes = {key: (value or "") for key, value in attrs}
         if style := attributes.get("style"):
             self.style_attrs.append(style)
+        if tag == "img":
+            source = attributes.get("src") or attributes.get("data-src") or ""
+            if not source and (jeu := attributes.get("srcset")):
+                source = jeu.split(",")[0].strip().split(" ")[0]
+            if source:
+                self.images.append((source, attributes.get("alt", "").strip()[:120]))
         if tag == "link" and "stylesheet" in attributes.get("rel", "").lower():
             if href := attributes.get("href"):
                 self.stylesheets.append(href)
@@ -129,6 +137,8 @@ class _Page(HTMLParser):
             nom = (attributes.get("name") or attributes.get("property") or "").lower()
             if nom in ("description", "og:description") and not self.description:
                 self.description = attributes.get("content", "")[:300]
+            elif nom in ("og:image", "twitter:image") and not self.og_image:
+                self.og_image = attributes.get("content", "")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("style", "title", "h1", "h2", "h3"):
@@ -208,6 +218,101 @@ def _declarations(css: str):
             yield node.lower_name, tinycss2.serialize(node.value).strip()
 
 
+MAX_IMAGES = 6
+MIN_IMAGE_BYTES = 4_000
+MAX_IMAGE_BYTES = 6_000_000
+
+_CSS_URL = re.compile(r"""url\(\s*['"]?([^)'"]+)""")
+# Les pictogrammes et les pixels de mesure ne racontent rien de la marque. Le
+# logo, lui, est garde : une page en a besoin pour s'identifier.
+_DECORATIVE = re.compile(
+    r"(sprite|icon|favicon|pixel|spacer|blank|placeholder|loader|avatar"
+    r"|badge|flag|arrow|chevron|bullet|separator|pattern)", re.IGNORECASE)
+
+
+def _domain(host: str) -> str:
+    """Les deux derniers labels : media.smartduck.fr et smartduck.fr sont un."""
+    return ".".join((host or "").lower().removeprefix("www.").split(".")[-2:])
+
+
+def image_candidates(page: "_Page", css_urls: list[str], *, base_url: str) -> list[dict]:
+    """Les visuels declares par le site, adresses absolues et texte alternatif.
+
+    Seules les images servies par le domaine du site sont retenues. Les sites
+    affichent volontiers des avatars d'avis clients heberges chez Google :
+    ce sont les visages de personnes reelles, qui n'ont rien a faire sur une
+    page de captation et ne disent rien de la marque.
+    """
+    domaine = _domain(urlsplit(base_url).hostname or "")
+    sources: list[tuple[str, str]] = []
+    if page.og_image:
+        # L'image de partage est celle que le site met lui-meme en avant.
+        sources.append((page.og_image, "Visuel mis en avant par le site"))
+    sources += page.images
+    sources += [(url, "") for url in css_urls]
+
+    vus: set[str] = set()
+    candidats: list[dict] = []
+    for source, alt in sources:
+        source = (source or "").strip()
+        if not source or source.startswith("data:"):
+            continue
+        absolu = urljoin(base_url, source)
+        parts = urlsplit(absolu)
+        if parts.scheme != "https" or not parts.hostname or _DECORATIVE.search(parts.path):
+            continue
+        if domaine and _domain(parts.hostname) != domaine:
+            continue
+        if absolu in vus:
+            continue
+        vus.add(absolu)
+        candidats.append({"url": absolu, "alt": alt})
+        if len(candidats) >= 20:
+            break
+    return candidats
+
+
+def _head(client: httpx.Client, url: str, *, resolve) -> httpx.Response:
+    """Un HEAD qui revalide chaque redirection, comme le telechargement."""
+    for _ in range(MAX_REDIRECTS + 1):
+        url = check_url(url, resolve=resolve)
+        response = client.head(url, follow_redirects=False)
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("location")
+            if not location:
+                raise SiteError("Redirection incomplete.")
+            url = urljoin(url, location)
+            continue
+        return response
+    raise SiteError("Trop de redirections.")
+
+
+def usable_images(candidats: list[dict], *, client: httpx.Client, resolve=_resolve) -> list[dict]:
+    """Ne garde que les visuels qui existent vraiment et pesent leur poids.
+
+    Une URL morte ou un pixel de mesure dans la page produite serait pire que
+    pas d'image du tout : on verifie avant de les proposer au modele.
+    """
+    gardees: list[dict] = []
+    for candidat in candidats:
+        if len(gardees) >= MAX_IMAGES:
+            break
+        try:
+            response = _head(client, candidat["url"], resolve=resolve)
+        except (SiteError, httpx.HTTPError):
+            continue
+        if response.status_code >= 400:
+            continue
+        type_mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not type_mime.startswith("image/"):
+            continue
+        taille = response.headers.get("content-length")
+        if taille and taille.isdigit() and not (MIN_IMAGE_BYTES <= int(taille) <= MAX_IMAGE_BYTES):
+            continue
+        gardees.append({**candidat, "type": type_mime})
+    return gardees
+
+
 def _saturation_lightness(couleur: str) -> tuple[float, float]:
     rouge, vert, bleu = (int(couleur[index:index + 2], 16) / 255 for index in (1, 3, 5))
     haut, bas = max(rouge, vert, bleu), min(rouge, vert, bleu)
@@ -242,9 +347,12 @@ def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
     par_role: dict[str, Counter] = {role: Counter() for role, _ in _ROLES}
     total: Counter = Counter()
     polices: Counter = Counter()
+    fonds: list[str] = []
     sources = page.inline_css + stylesheets + ["x{" + attr + "}" for attr in page.style_attrs]
     for css in sources:
         for propriete, valeur in _declarations(css):
+            if propriete.startswith("background"):
+                fonds.extend(_CSS_URL.findall(valeur))
             if propriete in ("font-family", "font"):
                 for famille in _families(propriete, valeur):
                     polices[famille] += 1
@@ -265,6 +373,7 @@ def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
     return {
         "url": url,
         "accent": accent_color(couleurs),
+        "images": image_candidates(page, fonds, base_url=url),
         "title": page.title,
         "description": page.description,
         "headings": page.headings,
@@ -313,4 +422,6 @@ def read_site(url: str, *, transport: httpx.BaseTransport | None = None, resolve
                 continue  # une feuille inaccessible ne doit pas tout faire échouer
             feuilles.append(css)
 
-    return extract(html, feuilles, url=final_url)
+        faits = extract(html, feuilles, url=final_url)
+        faits["images"] = usable_images(faits["images"], client=client, resolve=resolve)
+    return faits

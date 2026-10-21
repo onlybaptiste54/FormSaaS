@@ -3,7 +3,8 @@ import json
 import httpx
 import pytest
 
-from app.brand_site import SiteError, _families, accent_color, check_url, extract, read_site, site_name
+from app.brand_site import (MAX_IMAGES, SiteError, _families, accent_color, check_url, extract,
+                            image_candidates, read_site, site_name, usable_images)
 from app.luna import LunaAPIError, analyze_site_brand
 
 
@@ -147,3 +148,82 @@ def test_accent_color_skips_the_neutrals_that_cover_a_site():
 def test_extract_names_the_accent_of_the_site():
     faits = extract(PAGE, [FEUILLE], url="https://smartduck.fr/")
     assert faits["accent"] == "#7a3ff2"
+
+
+PAGE_VISUELS = (
+    '<html><head><title>Smart Duck</title>'
+    '<meta property="og:image" content="https://smartduck.fr/partage.jpg">'
+    '<style>.hero{background-image:url("https://smartduck.fr/fond.jpg")}</style>'
+    '</head><body>'
+    '<img src="/media/equipe.jpg" alt="L equipe en cabine">'
+    '<img src="https://smartduck.fr/media/equipe.jpg" alt="doublon">'
+    '<img src="/media/icon-check.svg" alt="">'
+    '<img src="data:image/gif;base64,R0lGOD" alt="">'
+    '<img srcset="/media/large.jpg 2x, /media/small.jpg 1x" alt="Cabine">'
+    '</body></html>'
+)
+
+
+def test_image_candidates_resolves_filters_and_deduplicates():
+    candidats = image_candidates(_parse(PAGE_VISUELS), [], base_url="https://smartduck.fr/")
+    urls = [c["url"] for c in candidats]
+    assert urls[0] == "https://smartduck.fr/partage.jpg", "le visuel de partage passe en tete"
+    assert urls.count("https://smartduck.fr/media/equipe.jpg") == 1, "le doublon absolu est fusionne"
+    assert "https://smartduck.fr/media/large.jpg" in urls, "srcset est lu"
+    assert not any("icon" in url for url in urls), "les pictogrammes sont ecartes"
+    assert not any(url.startswith("data:") for url in urls)
+    alt = next(c["alt"] for c in candidats if c["url"].endswith("equipe.jpg"))
+    assert alt == "L equipe en cabine"
+
+
+def test_image_candidates_reads_css_backgrounds():
+    faits = extract(PAGE_VISUELS, [], url="https://smartduck.fr/")
+    assert "https://smartduck.fr/fond.jpg" in [c["url"] for c in faits["images"]]
+
+
+def test_usable_images_drops_what_does_not_exist_or_weighs_nothing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        chemin = request.url.path
+        if chemin.endswith("absente.jpg"):
+            return httpx.Response(404)
+        if chemin.endswith("page.jpg"):
+            return httpx.Response(200, headers={"content-type": "text/html"})
+        if chemin.endswith("pixel.jpg"):
+            return httpx.Response(200, headers={"content-type": "image/jpeg", "content-length": "80"})
+        return httpx.Response(200, headers={"content-type": "image/jpeg", "content-length": "250000"})
+
+    candidats = [{"url": f"https://smartduck.fr/{nom}", "alt": ""} for nom in
+                 ("absente.jpg", "page.jpg", "pixel.jpg", "vraie.jpg", "autre.jpg")]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        gardees = usable_images(candidats, client=client, resolve=PUBLIC)
+    assert [g["url"].rsplit("/", 1)[-1] for g in gardees] == ["vraie.jpg", "autre.jpg"]
+    assert gardees[0]["type"] == "image/jpeg"
+
+
+def test_usable_images_revalidates_a_redirect_towards_a_private_address():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://10.0.0.5/secret.jpg"})
+
+    def resolve(host):
+        return ["10.0.0.5"] if host == "10.0.0.5" else ["93.184.216.34"]
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert usable_images([{"url": "https://smartduck.fr/a.jpg", "alt": ""}], client=client, resolve=resolve) == []
+
+
+def _parse(html: str):
+    from app.brand_site import _Page
+    page = _Page()
+    page.feed(html)
+    page.close()
+    return page
+
+
+def test_image_candidates_keeps_only_the_brand_own_domain():
+    """Les avatars d avis clients heberges chez Google sont des visages tiers."""
+    html = ('<body><img src="https://smartduck.fr/media/cabine.jpg" alt="Cabine">'
+            '<img src="https://media.smartduck.fr/salle.jpg" alt="Salle">'
+            '<img src="https://lh3.googleusercontent.com/a/ACg8ocI" alt="Avis de Sophie">'
+            '</body>')
+    urls = [c["url"] for c in image_candidates(_parse(html), [], base_url="https://www.smartduck.fr/")]
+    assert urls == ["https://smartduck.fr/media/cabine.jpg", "https://media.smartduck.fr/salle.jpg"]
