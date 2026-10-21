@@ -30,7 +30,7 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
   const [context, setContext] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [images, setImages] = useState<string[]>([]);
-  const [useBrand, setUseBrand] = useState(true);
+  const [brandSource, setBrandSource] = useState<"company" | "site" | "none">("company");
   const [lunaConfigured, setLunaConfigured] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(0);
@@ -70,7 +70,7 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
     try {
       const form = await api<Form>(`/campaigns/${id}/forms`, {
         method: "POST",
-        body: JSON.stringify({ prompt, name, description, context, website_url: websiteUrl, images, use_brand: useBrand }),
+        body: JSON.stringify({ prompt, name, description, context, website_url: websiteUrl, images, brand_source: brandSource }),
       });
       router.push(`/campaigns/${id}/forms/${form.id}?tab=form`);
     } catch (err) {
@@ -124,12 +124,28 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
             <textarea value={prompt} onChange={event => setPrompt(event.target.value)} maxLength={1200} placeholder="Ex. J’ai besoin du nom, du téléphone et du nombre de participants, avec une question sur le créneau souhaité…" autoFocus/>
             <span>{prompt.length}/1200</span>
           </div>
+          <div className="brand-source" role="radiogroup" aria-label="Identité appliquée à la page">
+            {([
+              ["company", me?.company.name ? `Marque de ${me.company.name}` : "Ma marque"],
+              ["site", "Charte d’un site client"],
+              ["none", "Aucune identité"],
+            ] as const).map(([valeur, libelle]) => <button
+              type="button" key={valeur} role="radio" aria-checked={brandSource === valeur}
+              className={brandSource === valeur ? "on" : ""} onClick={() => setBrandSource(valeur)}>
+              <i>{brandSource === valeur && <Check size={12}/>}</i>{libelle}
+            </button>)}
+          </div>
+          <label className="creation-website">
+            {brandSource === "site" ? <>Adresse du site du client</> : <>Site web à consulter <small>facultatif</small></>}
+            <input type="url" value={websiteUrl} maxLength={300} required={brandSource === "site"}
+              placeholder={brandSource === "site" ? "https://www.le-site-du-client.fr" : "https://www.votre-entreprise.fr"}
+              onChange={event => setWebsiteUrl(event.target.value)}/>
+          </label>
+          <p className="field-hint">{brandSource === "site"
+            ? "Luna lit les couleurs et les polices déclarées par ce site, et la page porte sa marque plutôt que la vôtre."
+            : "Luna peut s’appuyer sur les informations publiques de ce site et sur le brief pour créer une page plus spécifique."}</p>
           <details className="creation-context">
             <summary>Contexte et images de référence <small>facultatif</small></summary>
-            <label className="creation-website">Site web à consulter <small>facultatif</small>
-              <input type="url" value={websiteUrl} maxLength={300} placeholder="https://www.votre-entreprise.fr" onChange={event => setWebsiteUrl(event.target.value)}/>
-            </label>
-            <p className="field-hint">Luna peut s’appuyer sur les informations publiques de votre site et sur le brief pour créer une page plus spécifique.</p>
             <textarea value={context} maxLength={800} placeholder="Ex. c’est pour nos portes ouvertes du 12 octobre, le ton doit rester familial." onChange={event => setContext(event.target.value)}/>
             <div className="brand-dropzone">
               {images.map((image, index) => <div className="brand-thumb" key={image.slice(-24)}>
@@ -143,17 +159,11 @@ export default function NewFormPage({ params }: { params: Promise<{ id: string }
             </div>
           </details>
           {error && <p className="form-error">{error}</p>}
-          <button className="button button-primary button-large" disabled={busy || prompt.trim().length < 10}>
+          <button className="button button-primary button-large" disabled={busy || prompt.trim().length < 10 || (brandSource === "site" && !websiteUrl.trim())}>
             {busy ? <><LoaderCircle className="spin" size={19}/>{steps[step]}</> : <>Créer le formulaire <ArrowRight size={18}/></>}
           </button>
         </form>
         <div className="suggestions"><span>Ou partez d’une idée</span>{suggestions.map(item => <button type="button" key={item} onClick={() => setPrompt(item)}>{item}</button>)}</div>
-        <button type="button" className={`brand-toggle ${useBrand ? "on" : ""}`} onClick={() => setUseBrand(value => !value)}>
-          <i>{useBrand && <Check size={12}/>}</i>
-          {me?.company.brand?.summary || me?.company.brand?.palette?.length
-            ? `Charte de ${me.company.name} appliquée`
-            : `Identité de ${me?.company.name || "votre entreprise"} appliquée`}
-        </button>
       </>}
 
       <div className="creation-reassurance"><span><Check size={16}/>5 champs maximum, plus le consentement</span><span><Check size={16}/>Opt-in RGPD natif</span><span><Check size={16}/>Modifiable ensuite avec Luna</span></div>

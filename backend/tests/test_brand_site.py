@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.brand_site import SiteError, _families, check_url, extract, read_site
+from app.brand_site import SiteError, _families, check_url, extract, read_site, site_name
 from app.luna import LunaAPIError, analyze_site_brand
 
 
@@ -124,3 +124,13 @@ def test_font_shorthand_and_icon_fonts_do_not_pollute_the_families():
     assert _families("font-family", "eicons") == []
     assert _families("font-family", "var(--police), sans-serif") == []
     assert _families("font-family", '"Open Sans", sans-serif') == ["Open Sans"]
+
+
+def test_site_name_keeps_the_brand_and_drops_the_promise():
+    assert site_name({"title": "smartduck : épilation laser définitive, prix tout compris",
+                      "url": "https://smartduck.fr/"}) == "smartduck"
+    assert site_name({"title": "Atelier Rivage — Menuiserie", "url": "https://x.fr/"}) == "Atelier Rivage"
+    # Un titre sans separateur et trop long : le domaine ne ment jamais.
+    assert site_name({"title": "Bienvenue sur le site officiel de la menuiserie artisanale du Grand Ouest",
+                      "url": "https://www.menuiserie-ouest.fr/"}) == "menuiserie-ouest"
+    assert site_name({"title": "", "url": "https://smartduck.fr/"}) == "smartduck"

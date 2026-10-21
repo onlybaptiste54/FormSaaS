@@ -248,6 +248,27 @@ def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
     }
 
 
+_TITLE_SPLIT = re.compile(r"\s[:|–—]\s|\s[-]\s")
+
+
+def site_name(facts: dict) -> str:
+    """Le nom de la marque, tel qu'une page pourrait l'afficher.
+
+    Le titre d'une page porte presque toujours la marque en tête, suivie d'un
+    séparateur et d'une promesse (« smartduck : épilation laser définitive »).
+    On garde la tête quand elle a une taille plausible, sinon on retombe sur le
+    domaine, qui ne ment jamais.
+    """
+    titre = (facts.get("title") or "").strip()
+    tete = _TITLE_SPLIT.split(titre)[0].strip() if titre else ""
+    if 2 <= len(tete) <= 40:
+        return tete
+
+    hote = (urlsplit(facts.get("url") or "").hostname or "").removeprefix("www.")
+    etiquette = hote.split(".")[0] if hote else ""
+    return etiquette[:40] or "cette marque"
+
+
 def read_site(url: str, *, transport: httpx.BaseTransport | None = None, resolve=_resolve) -> dict:
     """Télécharge un site public et en extrait les faits de charte graphique."""
     with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport,

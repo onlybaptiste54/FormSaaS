@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .brand_site import SiteError, read_site
+from .brand_site import SiteError, read_site, site_name
 from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
@@ -392,6 +392,31 @@ def luna_identity(company: Company) -> dict:
     }
 
 
+def creation_identity(source: str, website_url: str, company: Company) -> dict:
+    """L'identite que la page appliquera, selon ce que l'utilisateur a choisi.
+
+    La charte d'un client est lue sur son site et remplace celle du compte :
+    une page faite pour un tiers ne doit rien porter de la marque qui la
+    commande. Le dictionnaire vide est un choix, pas une absence de reponse.
+    """
+    if source == "none":
+        return {}
+    if source != "site":
+        return luna_identity(company)
+    if not website_url.strip():
+        raise HTTPException(422, "Indiquez l'adresse du site dont il faut reprendre la charte.")
+    facts = read_site(website_url)
+    nom = site_name(facts)
+    profile = analyze_site_brand(
+        facts,
+        {"name": nom},
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        timeout_seconds=settings.openai_timeout_seconds,
+    )
+    return {"name": nom, "tone": profile["tone"], "brand": profile}
+
+
 def page_identity(form: Form) -> dict:
     """L'identite que cette page applique, figee a sa creation.
 
@@ -622,10 +647,17 @@ def list_forms(campaign_id: str, db: Session = Depends(get_db), user: User = Dep
 @app.post("/api/campaigns/{campaign_id}/forms", status_code=201)
 def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     campaign = owned_campaign(campaign_id, db, user)
+    # brand_source absent : les anciens appels passent encore par use_brand.
+    source = data.brand_source or ("company" if data.use_brand else "none")
     try:
-        # Decocher la marque doit tout retirer : avant, le nom, le secteur, le ton
-        # et les couleurs de l'entreprise partaient quand meme.
-        identity = luna_identity(user.company) if data.use_brand else {}
+        identity = creation_identity(source, data.website_url, user.company)
+    except SiteError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Ce site n'a pas répondu.") from exc
+    try:
         # Les anciennes colonnes restent disponibles pendant la migration, mais
         # une seule génération IA écrit désormais le document visible.
         generated = generate_campaign(
