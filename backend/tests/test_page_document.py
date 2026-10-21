@@ -1,6 +1,6 @@
 import pytest
 
-from app.page_document import MAX_PAGE_HTML, legacy_to_html, foreign_images, markdown_leftovers, meta_discourse, prepare_page, render_page, strip_tracking
+from app.page_document import same_document, MAX_PAGE_HTML, legacy_to_html, foreign_images, markdown_leftovers, meta_discourse, prepare_page, render_page, strip_tracking
 
 
 def _form(inner: str) -> str:
@@ -274,3 +274,11 @@ def test_foreign_images_ignores_html_escaping_of_the_url():
     # Une signature differente reste refusee.
     autre = '<img src="/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&amp;s=0000" alt="x">'
     assert len(foreign_images(autre, {autorisee})) == 1
+
+
+def test_same_document_ignores_serialisation_noise():
+    """Regression : une espace de plus dans @media suffisait a simuler un changement."""
+    avant = '<style>@media   (max-width:900px){h1{color:red}}</style><p>Bonjour</p>'
+    apres = '<style>@media    (max-width:900px){h1{color:red}}</style>  <p>Bonjour</p>'
+    assert same_document(avant, apres)
+    assert not same_document(avant, avant.replace("red", "blue"))

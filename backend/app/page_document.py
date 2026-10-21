@@ -713,6 +713,25 @@ def foreign_images(html: str, allowed: set[str]) -> list[str]:
     return intruses[:6]
 
 
+def same_document(first: str, second: str) -> bool:
+    """Deux pages sont-elles identiques, au bruit de serialisation pres ?
+
+    L'assainissement reecrit le CSS a chaque passage et y laisse une espace de
+    plus. Comparer les chaines telles quelles faisait donc passer pour une
+    modification une reponse qui ne changeait rien : une version etait
+    enregistree, et Luna annoncait un changement qui n'existait pas.
+    """
+    def normalise(document: str) -> str:
+        document = re.sub(r"\s+", " ", document)
+        # Les blancs entre balises ne se voient pas : les retirer evite qu'un
+        # simple reformatage passe pour une modification.
+        document = re.sub(r"\s*<", "<", document)
+        document = re.sub(r">\s*", ">", document)
+        return document.strip()
+
+    return normalise(first) == normalise(second)
+
+
 def strip_tracking(url: str) -> str:
     """Retire les parametres de suivi d'une URL, en gardant le reste intact."""
     if "?" not in url:

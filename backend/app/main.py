@@ -25,7 +25,7 @@ from .brand_site import SiteError, fetch_image, proxy_path, read_site, sign_imag
 from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
-from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page
+from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page, same_document
 from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, SiteBrandRequest, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import create_token, current_user, verify_password
 from .seed import seed
@@ -975,6 +975,15 @@ def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revisio
     except ValueError:
         db.rollback()
         raise
+
+    # Reponse qui n'a rien change : la reserialisation du CSS suffit a rendre
+    # les chaines differentes, alors on compare au bruit pres. Sans cela, Luna
+    # annonce un changement, une version s'empile, et l'utilisateur voit une
+    # page identique avec un bouton « annuler cette modification ».
+    if same_document(cleaned_html, expected_html):
+        db.rollback()
+        return {"message": "Je n'ai rien changé à la page : reformulez en précisant ce qui doit bouger.",
+                "form": form_json(db, form), "version": None, "touched": [], "changed": False}
 
     if not any((version.snapshot or {}).get("page_id") == page.id for version in form.versions):
         record_version(db, form, {**published_state(form), "html": form_page(form).html,
