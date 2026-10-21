@@ -244,6 +244,12 @@ class BrandAnalyzeRequest(BaseModel):
     notes: str = Field(default="", max_length=400)
 
 
+class SiteBrandRequest(BaseModel):
+    """Adresse publique dont on veut deduire la charte graphique."""
+
+    url: str = Field(min_length=4, max_length=300)
+
+
 class CompanyUpdate(BaseModel):
     name: str | None = None
     legal_name: str | None = None

@@ -9,6 +9,7 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 
+import httpx
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,11 +20,12 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
+from .brand_site import SiteError, read_site
+from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
 from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page
-from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
+from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, SiteBrandRequest, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import create_token, current_user, verify_password
 from .seed import seed
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
@@ -453,6 +455,32 @@ def analyze_company_brand(data: BrandAnalyzeRequest, user: User = Depends(curren
         )
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/api/brand/from-site")
+def brand_from_site(data: SiteBrandRequest, user: User = Depends(current_user)):
+    """Propose une charte lue sur un site public : rien n'est enregistre.
+
+    La reponse rend aussi les elements releves, pour que l'interface montre sur
+    quoi la proposition s'appuie et laisse corriger plutot que deviner.
+    """
+    try:
+        facts = read_site(data.url)
+    except SiteError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Ce site n'a pas répondu.") from exc
+    try:
+        profile = analyze_site_brand(
+            facts,
+            luna_identity(user.company),
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"profile": profile, "evidence": facts}
 
 
 @app.get("/api/stats")

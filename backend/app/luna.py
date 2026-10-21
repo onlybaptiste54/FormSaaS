@@ -339,6 +339,74 @@ def analyze_brand(
     return profile.model_dump()
 
 
+LUNA_SITE_BRAND_INSTRUCTIONS = """Tu es Luna, directrice artistique. On te donne les faits extraits d'un site public : les couleurs réellement déclarées dans son CSS avec leur rôle et leur fréquence, les polices déclarées, le titre, la description et les intertitres.
+
+Déduis-en un profil de marque exploitable pour une page de collecte :
+- palette : 2 à 6 couleurs prises uniquement dans la liste fournie, de la plus structurante à la plus secondaire. N'invente aucune couleur : toute couleur absente de la liste fait refuser ta réponse.
+- font : la police de la liste fermée qui s'approche le plus des polices déclarées.
+- tone : deux ou trois mots en français, par exemple « sobre et direct ».
+- rules_do et rules_avoid : consignes courtes et concrètes, tirées de ce que tu lis.
+- summary : une phrase qui résume l'identité.
+
+Une couleur fréquente n'est pas forcément la couleur de marque : le blanc, le noir et les gris servent surtout de fond et de texte, et la couleur d'accent est souvent moins fréquente qu'eux. Garde quand même un fond et une couleur de texte dans la palette, la page en a besoin. N'affirme rien sur l'activité de l'entreprise que les faits ne montrent pas.
+"""
+
+
+def analyze_site_brand(
+    facts: dict,
+    identity: str | dict,
+    *,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Propose un profil de marque à partir des faits extraits d'un site.
+
+    La palette est verrouillée sur les couleurs réellement lues : c'est la
+    seule garantie que le profil décrit le site et non une idée du site.
+    """
+    if not api_key:
+        raise LunaAPIError("Luna n'est pas connectée : renseignez la clé du service d'IA.")
+    relevees = {str(couleur.get("value", "")).lower() for couleur in facts.get("colors") or []}
+    if len(relevees) < 2:
+        raise LunaAPIError("Ce site ne déclare pas assez de couleurs pour en déduire une charte.")
+
+    safe_identity = _safe_identity(identity)
+    correction = ""
+    for attempt in (1, 2):
+        contenu = {"site": facts, "identity": safe_identity}
+        if correction:
+            contenu["correction_demandee"] = correction
+        request_payload = {
+            "model": model,
+            "instructions": LUNA_SITE_BRAND_INSTRUCTIONS,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": json.dumps(contenu, ensure_ascii=False)}]}],
+            "text": {"format": {"type": "json_schema", "name": "sillage_brand_profile", "strict": True, "schema": BrandProfile.model_json_schema()}},
+            "max_output_tokens": 600,
+            "store": False,
+            "safety_identifier": hashlib.sha256(str(facts.get("url") or "sillage-site").encode()).hexdigest()[:32],
+        }
+        try:
+            profile = BrandProfile.model_validate_json(_output_text(_request_openai(
+                request_payload, api_key=api_key, timeout_seconds=timeout_seconds, transport=transport,
+            )))
+            inventees = [couleur for couleur in profile.palette if couleur.lower() not in relevees]
+            if inventees:
+                raise ValueError(
+                    "Ces couleurs ne figurent pas dans le site : " + ", ".join(inventees)
+                    + ". Choisis uniquement dans la liste fournie."
+                )
+        except (ValidationError, ValueError) as exc:
+            correction = str(exc)
+            logger.warning("Luna site brand refused (attempt %s): %s", attempt, correction[:200])
+            if attempt == 2:
+                raise LunaAPIError("Luna n'a pas réussi à déduire une charte de ce site.") from exc
+            continue
+        return profile.model_dump()
+    raise LunaAPIError("Luna n'a pas réussi à déduire une charte de ce site.")
+
+
 def _company_name(identity: str | dict) -> str:
     if isinstance(identity, str):
         return identity
