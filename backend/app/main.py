@@ -1,4 +1,5 @@
 import csv
+import hmac
 import io
 import json
 import logging
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .brand_site import SiteError, read_site, site_name
+from .brand_site import SiteError, fetch_image, proxy_path, read_site, sign_image, site_name
 from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
@@ -422,7 +423,11 @@ def creation_identity(source: str, website_url: str, company: Company) -> dict:
     # Les visuels voyagent avec l'identite : Luna les retrouve a chaque retouche,
     # et le serveur refuse toute image qui n'en vient pas.
     if visuels := facts.get("images"):
-        identite["images"] = visuels
+        # Les visuels passent par Sillage : une image d'une autre origine
+        # souille le canvas de la capture de zone, qui echoue alors en silence.
+        identite["images"] = [{**visuel, "source": visuel["url"],
+                               "url": proxy_path(visuel["url"], settings.secret_key)}
+                              for visuel in visuels]
     return identite
 
 
@@ -515,6 +520,26 @@ def brand_from_site(data: SiteBrandRequest, user: User = Depends(current_user)):
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
     return {"profile": profile, "evidence": facts}
+
+
+@app.get("/api/brand/image")
+def brand_image(u: str = Query(max_length=2000), s: str = Query(max_length=64)):
+    """Sert un visuel du site d'un client depuis notre origine.
+
+    Publique et sans jeton, puisque les visiteurs de la page doivent la charger,
+    mais signee : sans la signature, l'API serait un relais ouvert vers
+    n'importe quelle adresse.
+    """
+    if not hmac.compare_digest(s, sign_image(u, settings.secret_key)):
+        raise HTTPException(404, "Visuel introuvable")
+    try:
+        contenu, type_mime = fetch_image(u)
+    except SiteError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Ce visuel n'a pas répondu.") from exc
+    return Response(contenu, media_type=type_mime,
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/stats")

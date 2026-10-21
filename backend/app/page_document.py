@@ -6,7 +6,7 @@ remain readable after the React renderer is removed.
 
 from __future__ import annotations
 
-from html import escape
+from html import escape, unescape
 from html.parser import HTMLParser
 import re
 import unicodedata
@@ -36,14 +36,24 @@ _DROP_VOID = frozenset("base link meta".split())
 _CSS_BAD_PROPERTIES = frozenset({"behavior", "-moz-binding"})
 _PAGE_CSP = (
     "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; "
-    "img-src https: data:; object-src 'none'; base-uri 'none'; "
+    # 'self' autorise le relais des visuels du client, servi a la meme origine
+    # que la page. Sans lui, ils passent en https mais pas en http local.
+    "img-src 'self' https: data:; object-src 'none'; base-uri 'none'; "
     "form-action 'none'; connect-src 'none'; frame-src 'none'"
 )
+
+
+# Les visuels du client sont servis par Sillage, a la meme origine que la page :
+# une image d'une autre origine souille le canvas et casse la capture de zone.
+PROXY_PREFIX = "/media/brand?"
 
 
 def _safe_url(value: str, *, image: bool = False) -> bool:
     value = value.strip()
     if value.lower().startswith("https://"):
+        return True
+    # Seul ce chemin relatif est accepte : // mene ailleurs, pas chez nous.
+    if image and value.startswith(PROXY_PREFIX):
         return True
     return image and bool(re.match(r"(?is)^data:image/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+$", value))
 
@@ -363,7 +373,7 @@ def prepare_page(html: str, *, require_form: bool) -> tuple[str, list[dict]]:
     guard.feed(html)
     guarded = "".join(guard.parts)
     cleaned = bleach.clean(guarded, tags=_TAGS, attributes=_allowed_attr,
-                           protocols={"https", "data"}, strip=True,
+                           protocols={"https", "data", ""}, strip=True,
                            strip_comments=True, css_sanitizer=_PageCSS())
     cleaned = _clean_links(cleaned)
     manifest = _manifest(cleaned, require_form=require_form)
@@ -709,7 +719,13 @@ def strip_tracking(url: str) -> str:
 
 
 def _clean_links(html: str) -> str:
-    """Nettoie les URL des attributs du document deja assaini."""
-    return re.sub(r'(href|src)="([^"]*)"',
-                  lambda found: f'{found.group(1)}="{escape(strip_tracking(found.group(2)), quote=True)}"',
-                  html)
+    """Nettoie les URL des attributs du document deja assaini.
+
+    La valeur lue est deja echappee : sans le unescape, un &amp; d'origine
+    ressortirait en &amp;amp; et couperait le parametre suivant.
+    """
+    def remplacer(trouve: re.Match) -> str:
+        propre = strip_tracking(unescape(trouve.group(2)))
+        return f'{trouve.group(1)}="{escape(propre, quote=True)}"'
+
+    return re.sub(r'(href|src)="([^"]*)"', remplacer, html)

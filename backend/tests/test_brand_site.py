@@ -4,7 +4,8 @@ import httpx
 import pytest
 
 from app.brand_site import (MAX_IMAGES, SiteError, _families, accent_color, check_url, extract,
-                            image_candidates, read_site, site_name, usable_images)
+                            fetch_image, image_candidates, proxy_path, read_site, sign_image,
+                            site_name, usable_images)
 from app.luna import LunaAPIError, analyze_site_brand
 
 
@@ -227,3 +228,39 @@ def test_image_candidates_keeps_only_the_brand_own_domain():
             '</body>')
     urls = [c["url"] for c in image_candidates(_parse(html), [], base_url="https://www.smartduck.fr/")]
     assert urls == ["https://smartduck.fr/media/cabine.jpg", "https://media.smartduck.fr/salle.jpg"]
+
+
+def test_proxy_path_is_signed_and_reversible():
+    chemin = proxy_path("https://smartduck.fr/a.png", "secret-de-test")
+    assert chemin.startswith("/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&s=")
+    assert chemin.endswith(sign_image("https://smartduck.fr/a.png", "secret-de-test"))
+    # Une autre URL, ou un autre secret, ne donne pas la meme signature.
+    assert sign_image("https://ailleurs.test/a.png", "secret-de-test") not in chemin
+    assert sign_image("https://smartduck.fr/a.png", "autre-secret") not in chemin
+
+
+def test_fetch_image_refuses_what_is_not_an_image():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("page.html"):
+            return httpx.Response(200, headers={"content-type": "text/html"}, content=b"x" * 9000)
+        if request.url.path.endswith("minuscule.png"):
+            return httpx.Response(200, headers={"content-type": "image/png"}, content=b"x" * 10)
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"x" * 9000)
+
+    transport = httpx.MockTransport(handler)
+    for mauvais in ("https://smartduck.fr/page.html", "https://smartduck.fr/minuscule.png"):
+        with pytest.raises(SiteError):
+            fetch_image(mauvais, transport=transport, resolve=PUBLIC)
+    contenu, type_mime = fetch_image("https://smartduck.fr/vraie.png", transport=transport, resolve=PUBLIC)
+    assert type_mime == "image/png" and len(contenu) == 9000
+
+
+def test_fetch_image_revalidates_redirects_towards_private_addresses():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:8000/api/health"})
+
+    def resolve(host):
+        return ["127.0.0.1"] if host == "127.0.0.1" else ["93.184.216.34"]
+
+    with pytest.raises(SiteError, match="réseau privé"):
+        fetch_image("https://smartduck.fr/a.png", transport=httpx.MockTransport(handler), resolve=resolve)

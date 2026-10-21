@@ -120,7 +120,8 @@ def test_render_adds_csp_to_form_and_thanks_documents():
         assert '<head><meta http-equiv="Content-Security-Policy"' in rendered
         assert "script-src 'none'" in rendered
         assert "style-src 'unsafe-inline'" in rendered
-        assert "img-src https: data:" in rendered
+        # 'self' couvre le relais des visuels du client, a la meme origine.
+        assert "img-src 'self' https: data:" in rendered
         assert "object-src 'none'" in rendered
         assert "base-uri 'none'" in rendered
         assert "form-action 'none'" in rendered
@@ -247,3 +248,15 @@ def test_foreign_images_only_accepts_what_was_provided():
     assert foreign_images(page, autorisees) == ["https://ailleurs.test/vole.jpg",
                                                 "https://ailleurs.test/fond.jpg"]
     assert foreign_images('<img src="https://smartduck.fr/media/equipe.jpg">', autorisees) == []
+
+
+def test_only_the_proxy_path_passes_as_a_relative_image():
+    """Le relais est accepte, les autres chemins relatifs non."""
+    def image(src: str) -> str:
+        document, _ = prepare_page(_form(f'<img src="{src}" alt="x"><input name="email" type="email">'),
+                                   require_form=True)
+        return document
+
+    assert '/media/brand?u=https%3A%2F%2Fx.fr%2Fa.png&amp;s=abc' in image("/media/brand?u=https%3A%2F%2Fx.fr%2Fa.png&amp;s=abc")
+    assert "evil.test" not in image("//evil.test/x.png")
+    assert "passwd" not in image("/etc/passwd")

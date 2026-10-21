@@ -13,12 +13,14 @@ devient un moyen d'aller interroger les services internes depuis l'API.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import re
 import socket
 from collections import Counter
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 import tinycss2
@@ -311,6 +313,50 @@ def usable_images(candidats: list[dict], *, client: httpx.Client, resolve=_resol
             continue
         gardees.append({**candidat, "type": type_mime})
     return gardees
+
+
+PROXY_PATH = "/media/brand"
+
+
+def sign_image(url: str, secret: str) -> str:
+    """Signature courte d'une URL d'image, pour ne pas ouvrir un relais public."""
+    return hmac.new(secret.encode(), url.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def proxy_path(url: str, secret: str) -> str:
+    """L'adresse par laquelle la page charge un visuel du client.
+
+    Les pages sont servies par Sillage, les visuels par le site du client. Un
+    canvas qui dessine une image d'une autre origine sans autorisation CORS est
+    souille par le navigateur, et la capture de zone echoue : c'est pour cela
+    que les images passent par nous plutot que d'etre pointees directement.
+    """
+    return f"{PROXY_PATH}?u={quote(url, safe='')}&s={sign_image(url, secret)}"
+
+
+def fetch_image(url: str, *, transport: httpx.BaseTransport | None = None, resolve=_resolve) -> tuple[bytes, str]:
+    """Telecharge un visuel distant, avec les memes gardes que le reste."""
+    with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport,
+                      headers={"User-Agent": USER_AGENT}, follow_redirects=False) as client:
+        for _ in range(MAX_REDIRECTS + 1):
+            url = check_url(url, resolve=resolve)
+            response = client.get(url, follow_redirects=False)
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location")
+                if not location:
+                    raise SiteError("Le site renvoie une redirection incomplete.")
+                url = urljoin(url, location)
+                continue
+            if response.status_code >= 400:
+                raise SiteError(f"Le visuel a repondu {response.status_code}.")
+            type_mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
+            if not type_mime.startswith("image/"):
+                raise SiteError("Cette adresse ne renvoie pas une image.")
+            contenu = response.content[:MAX_IMAGE_BYTES]
+            if len(contenu) < MIN_IMAGE_BYTES:
+                raise SiteError("Ce visuel est trop leger pour etre utilise.")
+            return contenu, type_mime
+    raise SiteError("Le visuel enchaine trop de redirections.")
 
 
 def _saturation_lightness(couleur: str) -> tuple[float, float]:

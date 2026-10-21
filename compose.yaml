@@ -43,8 +43,11 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}/api
+        API_INTERNAL_URL: http://api:8000
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}/api
+      # Adresse de l'API vue depuis le conteneur web, pour le relais des visuels.
+      API_INTERNAL_URL: http://api:8000
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
