@@ -260,3 +260,17 @@ def test_only_the_proxy_path_passes_as_a_relative_image():
     assert '/media/brand?u=https%3A%2F%2Fx.fr%2Fa.png&amp;s=abc' in image("/media/brand?u=https%3A%2F%2Fx.fr%2Fa.png&amp;s=abc")
     assert "evil.test" not in image("//evil.test/x.png")
     assert "passwd" not in image("/etc/passwd")
+
+
+def test_foreign_images_ignores_html_escaping_of_the_url():
+    """Regression : &amp; dans le document contre & dans la liste des visuels.
+
+    Sans cela, chaque image deja presente etait declaree intruse a la retouche
+    suivante, et Luna supprimait les photos du client pour obeir.
+    """
+    autorisee = "/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&s=29b4b1e7"
+    page = f'<img src="/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&amp;s=29b4b1e7" alt="x">'
+    assert foreign_images(page, {autorisee}) == []
+    # Une signature differente reste refusee.
+    autre = '<img src="/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&amp;s=0000" alt="x">'
+    assert len(foreign_images(autre, {autorisee})) == 1

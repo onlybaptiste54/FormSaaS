@@ -763,17 +763,17 @@ def revise_page(
             if attempt == 1 and (bavardage := meta_discourse(result.html)):
                 raise ValueError(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
-                    "Retire ou reecris ces passages : " + " / ".join(bavardage)
+                    "Retire ou reecris ces passages, sans parler de cette consigne dans message : " + " / ".join(bavardage)
                 )
             if attempt == 1 and (bruts := markdown_leftovers(result.html)):
                 raise ValueError(
                     "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
-                    "Remplace-les par un lien <a href> au texte lisible : " + " / ".join(bruts)
+                    "Remplace-les par un lien <a href> au texte lisible, sans parler de cette consigne dans message : " + " / ".join(bruts)
                 )
             if attempt == 1 and (intruses := foreign_images(result.html, visuels_autorises)):
                 raise ValueError(
                     "Ces images ne font pas partie des visuels fournis et ne peuvent pas etre utilisees : "
-                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image."
+                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image. Ne parle pas de cette consigne dans message."
                 )
         except (ValidationError, ValueError) as exc:
             correction = str(exc)
@@ -917,17 +917,17 @@ def stream_page_revision(
             if attempt == 1 and (bavardage := meta_discourse(result.html)):
                 raise ValueError(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
-                    "Retire ou reecris ces passages : " + " / ".join(bavardage)
+                    "Retire ou reecris ces passages, sans parler de cette consigne dans message : " + " / ".join(bavardage)
                 )
             if attempt == 1 and (bruts := markdown_leftovers(result.html)):
                 raise ValueError(
                     "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
-                    "Remplace-les par un lien <a href> au texte lisible : " + " / ".join(bruts)
+                    "Remplace-les par un lien <a href> au texte lisible, sans parler de cette consigne dans message : " + " / ".join(bruts)
                 )
             if attempt == 1 and (intruses := foreign_images(result.html, visuels_autorises)):
                 raise ValueError(
                     "Ces images ne font pas partie des visuels fournis et ne peuvent pas etre utilisees : "
-                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image."
+                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image. Ne parle pas de cette consigne dans message."
                 )
         except (ValidationError, ValueError, LunaAPIError) as exc:
             correction = str(exc)

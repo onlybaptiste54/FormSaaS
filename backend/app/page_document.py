@@ -697,11 +697,16 @@ def foreign_images(html: str, allowed: set[str]) -> list[str]:
     encore, ni si elle lui appartient. Une image inventee casse la page ou
     emprunte le bien d'autrui : on n'accepte que ce qu'on a nous-memes valide.
     """
+    # Les deux cotes sont ramenes a la meme forme : dans le document, un & est
+    # ecrit &amp;, alors que la liste des visuels porte l'URL brute. Sans ce
+    # unescape, chaque image deja en place etait declaree intruse, et Luna la
+    # supprimait pour obeir a la reprise.
+    permises = {unescape(url) for url in allowed}
     trouvees = _IMAGE_SOURCE.findall(html) + _CSS_IMAGE.findall(html)
     intruses = []
     for source in trouvees:
-        source = source.strip()
-        if source.startswith("data:") or source in allowed:
+        source = unescape(source.strip())
+        if source.startswith("data:") or source in permises:
             continue
         if source not in intruses:
             intruses.append(source[:160])
