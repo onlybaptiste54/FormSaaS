@@ -352,6 +352,7 @@ def form_from_template(db: Session, template: dict, user: User, campaign: Campai
     return Form(
         campaign_id=campaign.id,
         creator_id=user.id,
+        identity=luna_identity(user.company),
         name=template["name"],
         slug=unique_slug(db, template["name"]),
         description=template["description"],
@@ -387,6 +388,18 @@ def luna_identity(company: Company) -> dict:
         "accent_color": company.accent_color,
         "brand": company.brand or {},
     }
+
+
+def page_identity(form: Form) -> dict:
+    """L'identite que cette page applique, figee a sa creation.
+
+    NULL signale un formulaire cree avant que l'identite ne soit figee : il
+    retombe sur celle du compte. Un dictionnaire vide est un choix explicite de
+    n'appliquer aucune identite, et doit le rester.
+    """
+    if form.identity is not None:
+        return form.identity
+    return luna_identity(form.campaign.company)
 
 
 @app.get("/api/health")
@@ -582,9 +595,9 @@ def list_forms(campaign_id: str, db: Session = Depends(get_db), user: User = Dep
 def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     campaign = owned_campaign(campaign_id, db, user)
     try:
-        identity = luna_identity(user.company)
-        if not data.use_brand:
-            identity = {**identity, "brand": {}}
+        # Decocher la marque doit tout retirer : avant, le nom, le secteur, le ton
+        # et les couleurs de l'entreprise partaient quand meme.
+        identity = luna_identity(user.company) if data.use_brand else {}
         # Les anciennes colonnes restent disponibles pendant la migration, mais
         # une seule génération IA écrit désormais le document visible.
         generated = generate_campaign(
@@ -617,7 +630,7 @@ def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db
     if data.description.strip():
         generated["description"] = data.description.strip()
     generated["slug"] = unique_slug(db, generated["name"])
-    form = Form(campaign_id=campaign.id, creator_id=user.id,
+    form = Form(campaign_id=campaign.id, creator_id=user.id, identity=identity,
                 brief={"prompt": data.prompt, "context": data.context, "website_url": data.website_url}, **generated)
     db.add(form)
     create_form_pages(db, form, initial_html)
@@ -896,7 +909,7 @@ def refine_with_luna(form_id: str, data: LunaRefineRequest, db: Session = Depend
     form = owned_form(form_id, db, user)
     current_html, context = page_revision_context(db, form, data)
     try:
-        revision = revise_page(current_html, data.instruction, luna_identity(user.company), **context)
+        revision = revise_page(current_html, data.instruction, page_identity(form), **context)
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
     try:
@@ -924,7 +937,7 @@ def refine_with_luna_stream(form_id: str, data: LunaRefineRequest, db: Session =
                 return
             current_html, context = page_revision_context(stream_db, form, data)
             try:
-                for event in stream_page_revision(current_html, data.instruction, luna_identity(form.campaign.company), **context):
+                for event in stream_page_revision(current_html, data.instruction, page_identity(form), **context):
                     if event["type"] == "final":
                         result = save_page_revision(stream_db, form, data, event, current_html)
                         yield send({"type": "final", **result})
@@ -1069,7 +1082,7 @@ def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db)
 def duplicate_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = owned_form(form_id, db, user)
     name = f"{source.name} - copie"
-    copy = Form(campaign_id=source.campaign_id, creator_id=user.id, name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=thank_you_settings(source), visibility="private")
+    copy = Form(campaign_id=source.campaign_id, creator_id=user.id, identity=page_identity(source), name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=thank_you_settings(source), visibility="private")
     db.add(copy)
     copy_form_pages(db, source, copy)
     db.commit()

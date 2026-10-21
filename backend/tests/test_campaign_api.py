@@ -716,3 +716,70 @@ def test_html_draft_warns_about_old_answers_and_preserves_them(client):
     assert inbox["total"] == 2
     assert any(row["answers"] == answers for row in inbox["items"])
     client.post(f"/api/forms/{form['id']}/draft/discard")
+
+
+DOCUMENT_LIBRE = (
+    '<!doctype html><html><head><style>body{background:#123}</style></head><body>'
+    '<main data-sillage-region="hero"><h1>Une page</h1></main>'
+    '<form data-sillage="form"><label>Email<input name="email" type="email" required></label>'
+    '<div data-sillage="consent"></div><button>Envoyer</button></form></body></html>'
+)
+
+
+def test_a_page_keeps_the_identity_it_was_born_with(client, monkeypatch):
+    """Changer les couleurs du compte ne doit plus deriver les pages existantes."""
+    from app import main
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    vues = []
+
+    def generate_page(*args, **kwargs):
+        vues.append(args[1])
+        return {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}
+
+    monkeypatch.setattr(main, "generate_page", generate_page)
+    campaign = client.post("/api/campaigns", json={"name": "Identité figée"}).json()
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "Une page de contact"}).json()
+    couleur_origine = vues[0]["primary_color"]
+
+    client.patch("/api/company", json={"primary_color": "#123456", "name": "Autre Maison"})
+    try:
+        def fake_revision(html, instruction, identity, **kwargs):
+            vues.append(identity)
+            return {"message": "Fait.", "html": html, "region": None}
+
+        monkeypatch.setattr(main, "revise_page", fake_revision)
+        client.post(f"/api/forms/{form['id']}/luna/refine", json={"instruction": "Change le titre"})
+    finally:
+        client.patch("/api/company", json={"primary_color": couleur_origine, "name": vues[0]["name"]})
+
+    assert vues[1]["primary_color"] == couleur_origine
+    assert vues[1]["name"] == vues[0]["name"]
+
+
+def test_creating_without_the_brand_applies_no_identity_at_all(client, monkeypatch):
+    """Decocher la marque retirait le profil mais gardait nom, ton et couleurs."""
+    from app import main
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    vues = []
+
+    def generate_page(*args, **kwargs):
+        vues.append(args[1])
+        return {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}
+
+    monkeypatch.setattr(main, "generate_page", generate_page)
+    campaign = client.post("/api/campaigns", json={"name": "Sans marque"}).json()
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms",
+                       json={"prompt": "Une page neutre", "use_brand": False}).json()
+    assert vues[0] == {}
+
+    def fake_revision(html, instruction, identity, **kwargs):
+        vues.append(identity)
+        return {"message": "Fait.", "html": html, "region": None}
+
+    monkeypatch.setattr(main, "revise_page", fake_revision)
+    client.post(f"/api/forms/{form['id']}/luna/refine", json={"instruction": "Change le titre"})
+    assert vues[1] == {}, "un choix explicite de ne pas appliquer d'identite doit le rester"
