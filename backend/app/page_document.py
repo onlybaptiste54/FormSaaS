@@ -9,6 +9,7 @@ from __future__ import annotations
 from html import escape
 from html.parser import HTMLParser
 import re
+import unicodedata
 
 import bleach
 import tinycss2
@@ -555,3 +556,87 @@ button{justify-self:start;min-height:46px;padding:0 24px;border:0;border-radius:
 @media(max-width:600px){body{padding:24px 16px}main{margin:4vh auto}button{width:100%}}
 """
     return f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{css}</style></head><body>{body}</body></html>'
+
+
+# --- Méta-discours -----------------------------------------------------------
+#
+# Une page produite par Luna s'adresse aux visiteurs. Il lui arrive pourtant d'y
+# écrire ce qu'elle dirait à la personne qui l'a commandée : la demande
+# reformulée (« un formulaire opt-in clair et rassurant pour capter des
+# prospects »), ou un encart qui justifie ses choix et ses sources. Le visiteur
+# le lit, et ça décrédibilise la page.
+#
+# La liste de marqueurs ci-dessous est volontairement étroite. Elle ne cherche
+# pas à juger un style : elle attrape le vocabulaire du livrable, qu'on n'écrit
+# pas à un visiteur, et les tournures par lesquelles Luna se raconte. Mieux vaut
+# laisser passer une phrase douteuse que refuser une page légitime.
+
+_META_JARGON = (
+    "opt-in", "optin", "opt in",
+    "landing page", "page de capture", "tunnel de conversion",
+    "call-to-action", "call to action", "taux de conversion",
+    "lead magnet", "copywriting", "wireframe",
+)
+
+_META_JUSTIFICATION = (
+    "met l'accent sur",
+    "le contenu s'appuie", "ce contenu s'appuie", "s'appuie sur les messages",
+    "je me suis appuye", "je me suis inspire",
+    "mis en avant publiquement", "selon le site officiel",
+    "le brief", "votre brief",
+    "cette page a ete concue", "ce formulaire a ete concu",
+)
+
+
+class _VisibleText(HTMLParser):
+    """Texte que le visiteur lit réellement, sans le style ni l'en-tête."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.chunks: list[str] = []
+        self._muted = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in ("style", "script", "title", "head"):
+            self._muted += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("style", "script", "title", "head") and self._muted:
+            self._muted -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._muted and data.strip():
+            self.chunks.append(data.strip())
+
+
+def _flatten(value: str) -> str:
+    """Minuscules sans accents ni apostrophe typographique, pour comparer."""
+    value = value.replace("\u2019", "'").replace("\u02bc", "'")
+    value = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in value if not unicodedata.combining(char)).lower()
+
+
+def meta_discourse(html: str) -> list[str]:
+    """Phrases où la page se décrit elle-même, au lieu de s'adresser au visiteur.
+
+    Renvoie les extraits fautifs pour qu'on puisse les citer au modèle : une
+    reprise corrige bien mieux quand elle sait quelle phrase retirer.
+    """
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # un HTML cassé est traité ailleurs, pas ici
+        return []
+
+    marqueurs = _META_JARGON + _META_JUSTIFICATION
+    fautifs: list[str] = []
+    for chunk in parser.chunks:
+        for phrase in re.split(r"(?<=[.!?;])\s+|\n+", chunk):
+            phrase = phrase.strip()
+            if not phrase:
+                continue
+            plat = _flatten(phrase)
+            if any(marqueur in plat for marqueur in marqueurs) and phrase not in fautifs:
+                fautifs.append(phrase[:160])
+    return fautifs[:6]

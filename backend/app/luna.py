@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
-from .page_document import MAX_PAGE_HTML
+from .page_document import MAX_PAGE_HTML, meta_discourse
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
 La page sera assainie et validée par le serveur avant stockage. N'extrais aucune donnée personnelle des images.
 """
 
@@ -685,6 +686,13 @@ def revise_page(
             selected_region = selection.get("region")
             if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
+            # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
+            # refus sec, donc la seconde tentative se contente d'alerter.
+            if attempt == 1 and (bavardage := meta_discourse(result.html)):
+                raise ValueError(
+                    "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
+                    "Retire ou reecris ces passages : " + " / ".join(bavardage)
+                )
         except (ValidationError, ValueError) as exc:
             correction = str(exc)
             logger.warning("Luna page refused (attempt %s): %s", attempt, correction[:200])
@@ -692,6 +700,8 @@ def revise_page(
                 raise LunaAPIError(f"Luna n'a pas pu produire une page valide : {correction}") from exc
             continue
         logger.info("Luna page produced in %.1fs, attempt %s, %s tokens", time.monotonic() - started, attempt, (response.get("usage") or {}).get("total_tokens", "?"))
+        if reste := meta_discourse(result.html):
+            logger.warning("Luna page keeps meta discourse: %s", " / ".join(reste)[:200])
         return result.model_dump()
     raise LunaAPIError("Luna n'a pas pu produire une page valide.")
 
@@ -816,12 +826,21 @@ def stream_page_revision(
             selected_region = selection.get("region")
             if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
+            # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
+            # refus sec, donc la seconde tentative se contente d'alerter.
+            if attempt == 1 and (bavardage := meta_discourse(result.html)):
+                raise ValueError(
+                    "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
+                    "Retire ou reecris ces passages : " + " / ".join(bavardage)
+                )
         except (ValidationError, ValueError, LunaAPIError) as exc:
             correction = str(exc)
             if attempt == 2:
                 raise LunaAPIError(f"Luna n'a pas pu produire une page valide : {correction}") from exc
             yield {"type": "reset"}
             continue
+        if reste := meta_discourse(result.html):
+            logger.warning("Luna page keeps meta discourse: %s", " / ".join(reste)[:200])
         yield {"type": "final", **result.model_dump()}
         return
 

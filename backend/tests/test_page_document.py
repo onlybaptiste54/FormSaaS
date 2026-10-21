@@ -1,6 +1,6 @@
 import pytest
 
-from app.page_document import MAX_PAGE_HTML, legacy_to_html, prepare_page, render_page
+from app.page_document import MAX_PAGE_HTML, legacy_to_html, meta_discourse, prepare_page, render_page
 
 
 def _form(inner: str) -> str:
@@ -167,3 +167,42 @@ def test_legacy_conversion_preserves_fields_and_older_style_tokens():
         require_form=False,
     )
     assert "Merci {prenom} !" in personalized
+
+
+def test_meta_discourse_reports_page_talking_about_itself():
+    """Les deux formes observées en production : brief reformulé, choix justifiés."""
+    page = (
+        '<!doctype html><html lang="fr"><body>'
+        '<p>Un formulaire opt-in clair, élégant et rassurant pour capter des prospects.</p>'
+        '<aside>Le message met l’accent sur la transparence tarifaire, '
+        'des éléments mis en avant publiquement par Smartduck.</aside>'
+        + _form('<input name="email" type="email">')
+        + '</body></html>'
+    )
+    fautifs = meta_discourse(page)
+    assert len(fautifs) == 2
+    assert any("opt-in" in phrase for phrase in fautifs)
+    assert any("met l’accent" in phrase for phrase in fautifs)
+
+
+def test_meta_discourse_accepts_a_page_written_for_visitors():
+    """Aucun faux positif sur une vraie page, lien source et mentions compris."""
+    page = (
+        '<!doctype html><html lang="fr"><head>'
+        '<title>Formulaire opt-in interne</title>'
+        '<style>.cta{color:red}/* landing page */</style>'
+        '</head><body>'
+        '<h1>Retrouvez une peau nette durablement</h1>'
+        '<p>Décrivez votre demande, nous revenons vers vous sous 24 heures.</p>'
+        '<p>Nos tarifs sont publics : <a href="https://exemple.fr/tarifs">voir les tarifs</a>.</p>'
+        + _form('<input name="email" type="email">')
+        + '</body></html>'
+    )
+    assert meta_discourse(page) == []
+
+
+def test_meta_discourse_ignores_style_and_handles_typographic_apostrophe():
+    assert meta_discourse('<style>/* taux de conversion */</style><p>Bonjour</p>') == []
+    droite = meta_discourse("<p>Le contenu s'appuie sur leur site.</p>")
+    courbe = meta_discourse("<p>Le contenu s’appuie sur leur site.</p>")
+    assert len(droite) == 1 and len(courbe) == 1

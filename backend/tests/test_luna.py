@@ -382,3 +382,43 @@ def test_stream_page_revision_resets_invalid_fragment_and_omits_images_on_retry(
     assert {"type": "reset"} in updates
     assert updates[-1]["type"] == "final"
     assert all(block["type"] != "input_image" for message in calls[1]["input"] for block in message["content"])
+
+
+def test_page_revision_retries_once_when_the_page_describes_itself():
+    """La première page se raconte : on la refuse en citant la phrase fautive."""
+    bavarde = PAGE.replace("<h1>Contact</h1>", "<h1>Contact</h1><p>Un formulaire opt-in pour capter des prospects.</p>")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return _page_response("Page créée.", bavarde)
+        return _page_response("Page créée.", PAGE)
+
+    result = revise_page(
+        "", "Crée une page de contact", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Nouvelle page"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requests) == 2
+    reprise = json.dumps(requests[1], ensure_ascii=False)
+    assert "opt-in" in reprise and "s'adresser aux visiteurs" in reprise
+    assert result["html"] == PAGE
+
+
+def test_page_revision_keeps_a_second_attempt_that_still_describes_itself():
+    """Mieux vaut une page imparfaite qu'un refus sec : la reprise n'est pas rejouée."""
+    bavarde = PAGE.replace("<h1>Contact</h1>", "<h1>Contact</h1><p>Un formulaire opt-in pour capter des prospects.</p>")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return _page_response("Page créée.", bavarde)
+
+    result = revise_page(
+        "", "Crée une page de contact", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Nouvelle page"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requests) == 2
+    assert result["html"] == bavarde
