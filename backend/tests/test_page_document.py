@@ -282,3 +282,15 @@ def test_same_document_ignores_serialisation_noise():
     apres = '<style>@media    (max-width:900px){h1{color:red}}</style>  <p>Bonjour</p>'
     assert same_document(avant, apres)
     assert not same_document(avant, avant.replace("red", "blue"))
+
+
+def test_prepare_page_merges_several_style_blocks():
+    """Luna ajoute parfois une feuille au lieu de modifier l'existante."""
+    source = ('<style>:root{--a:#111}h1{color:var(--a)}</style>'
+              + _form('<input name="email" type="email">')
+              + '<style>.panel{background:#eee}</style>')
+    document, _ = prepare_page(source, require_form=True)
+    assert document.lower().count("<style") == 1
+    # L'ordre des regles est conserve, donc la cascade ne bouge pas.
+    style = document[document.find("<style"):document.find("</style>")]
+    assert style.index("--a:#111") < style.index(".panel")

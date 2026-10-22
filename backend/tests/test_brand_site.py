@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.brand_site import (MAX_IMAGES, SiteError, _families, accent_color, check_url, extract,
-                            fetch_image, image_candidates, proxy_path, read_site, sign_image,
+                            color_roles, fetch_image, image_candidates, proxy_path, read_site, sign_image,
                             site_name, usable_images)
 from app.luna import LunaAPIError, analyze_site_brand
 
@@ -264,3 +264,24 @@ def test_fetch_image_revalidates_redirects_towards_private_addresses():
 
     with pytest.raises(SiteError, match="réseau privé"):
         fetch_image("https://smartduck.fr/a.png", transport=httpx.MockTransport(handler), resolve=resolve)
+
+
+def test_color_roles_names_an_employment_for_each_shade():
+    """Une liste ordonnee ne dit pas quoi faire d'une couleur ; un role, si."""
+    releve = [{"value": v} for v in ("#ffffff", "#000000", "#5b2d8b", "#2f2d2b",
+                                     "#69727d", "#333333", "#d9534f", "#eeeeee")]
+    roles = color_roles(releve)
+    assert roles["accent"] == "#5b2d8b"
+    assert roles["fond"] == "#ffffff"
+    assert roles["fond_doux"] == "#eeeeee", "la teinte qui casse le blanc"
+    assert roles["secondaire"] == "#69727d"
+    assert roles["encre"] in ("#000000", "#2f2d2b", "#333333")
+    # Aucune couleur n'est inventee : chaque role sort du releve.
+    assert set(filter(None, roles.values())) <= {c["value"] for c in releve}
+
+
+def test_color_roles_admits_when_the_site_offers_nothing():
+    """Un role absent vaut None, pour que Luna puisse le dire au lieu de bluffer."""
+    roles = color_roles([{"value": "#ffffff"}, {"value": "#111111"}])
+    assert roles["fond"] == "#ffffff" and roles["encre"] == "#111111"
+    assert roles["accent"] is None and roles["fond_doux"] is None

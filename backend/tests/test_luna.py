@@ -471,3 +471,22 @@ def test_looks_like_question_describes_the_form_not_the_intent():
     for ordre in ["Mets le bouton d’envoi en vert sapin", "supprime ça",
                   "Raccourcis le titre principal", "Ajoute une section tarifs", ""]:
         assert not looks_like_question(ordre), ordre
+
+
+def test_a_second_style_block_is_sent_back_for_correction():
+    """Un <style> ajoute redeclare tout :root et gonfle la page a chaque retouche."""
+    double = PAGE.replace("</head>", "<style>.x{color:red}</style></head>")
+    requetes = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requetes.append(json.loads(request.content))
+        return _page_response("Fait.", double if len(requetes) == 1 else PAGE)
+
+    result = revise_page(
+        PAGE, "Mets plus de couleur", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Page complète"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requetes) == 2
+    assert "un seul bloc <style>" in json.dumps(requetes[1], ensure_ascii=False)
+    assert result["html"] == PAGE

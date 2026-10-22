@@ -45,6 +45,7 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+identity.couleurs donne l'emploi de chaque teinte relevee sur le site : accent pour ce qui souligne et appelle a l'action, fond pour la base, fond_doux pour poser un aplat qui casse le blanc, encre pour le texte, secondaire pour le texte attenue. Quand on te dit qu'une page est trop blanche ou manque de couleur, sers-toi de fond_doux sur des surfaces et de l'accent sur les reperes, sans inventer de teinte absente de cette liste. Si le role dont tu aurais besoin vaut null, dis-le dans message plutot que de renvoyer la page inchangee en annoncant un changement.
 identity.images liste les visuels du site de la marque, avec leur texte alternatif : tu peux les placer dans la page par <img src="..." alt="...">, en reprenant l'URL exactement. Sers-t'en pour donner du corps a la page, un visuel d'accroche par exemple. N'utilise aucune autre image : toute URL qui ne vient pas de cette liste est refusee.
 Tu ecris du HTML, jamais du Markdown : pas de [texte](url), pas de **gras**, pas de # titre. Une source se cite par un <a href="..."> dont le texte est lisible, par exemple le nom du site, et jamais par une URL ecrite en clair dans le texte. N'ajoute aucun parametre de suivi aux liens.
 La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
@@ -422,7 +423,7 @@ def _company_name(identity: str | dict) -> str:
 def _safe_identity(identity: str | dict) -> dict:
     if isinstance(identity, str):
         return {"name": identity}
-    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand", "images")
+    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand", "images", "couleurs")
     return {key: identity[key] for key in allowed if identity.get(key)}
 
 
@@ -807,6 +808,13 @@ def revise_page(
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
             # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
             # refus sec, donc la seconde tentative se contente d'alerter.
+            # Un second <style> redeclare tout :root et gonfle le document a
+            # chaque retouche. La regle existe dans les consignes ; ici on la tient.
+            if attempt == 1 and result.region is None and result.html.lower().count("<style") > 1:
+                raise ValueError(
+                    "La page doit contenir un seul bloc <style>. Fusionne tes regles dans celui "
+                    "qui existe au lieu d'en ajouter un. Ne parle pas de cette consigne dans message."
+                )
             if attempt == 1 and result.html.strip() and (bavardage := meta_discourse(result.html)):
                 raise ValueError(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
@@ -965,6 +973,13 @@ def stream_page_revision(
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
             # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
             # refus sec, donc la seconde tentative se contente d'alerter.
+            # Un second <style> redeclare tout :root et gonfle le document a
+            # chaque retouche. La regle existe dans les consignes ; ici on la tient.
+            if attempt == 1 and result.region is None and result.html.lower().count("<style") > 1:
+                raise ValueError(
+                    "La page doit contenir un seul bloc <style>. Fusionne tes regles dans celui "
+                    "qui existe au lieu d'en ajouter un. Ne parle pas de cette consigne dans message."
+                )
             if attempt == 1 and result.html.strip() and (bavardage := meta_discourse(result.html)):
                 raise ValueError(
                     "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "

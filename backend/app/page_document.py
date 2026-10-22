@@ -375,7 +375,7 @@ def prepare_page(html: str, *, require_form: bool) -> tuple[str, list[dict]]:
     cleaned = bleach.clean(guarded, tags=_TAGS, attributes=_allowed_attr,
                            protocols={"https", "data", ""}, strip=True,
                            strip_comments=True, css_sanitizer=_PageCSS())
-    cleaned = _clean_links(cleaned)
+    cleaned = _merge_styles(_clean_links(cleaned))
     manifest = _manifest(cleaned, require_form=require_form)
     document = f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>{cleaned}</body></html>'
     if len(document) > MAX_PAGE_HTML:
@@ -740,6 +740,28 @@ def strip_tracking(url: str) -> str:
     gardes = [(cle, valeur) for cle, valeur in parse_qsl(parts.query, keep_blank_values=True)
               if not _TRACKING.match(cle)]
     return urlunsplit(parts._replace(query=urlencode(gardes)))
+
+
+def _merge_styles(html: str) -> str:
+    """Rassemble les blocs <style> en un seul, a la place du premier.
+
+    Luna ajoute parfois une feuille plutot que de modifier celle qui existe, en
+    redeclarant tout :root au passage. L'ordre des regles est conserve, donc la
+    cascade ne change pas, et le document cesse de gonfler a chaque retouche.
+    """
+    blocs = re.findall(r"<style[^>]*>(.*?)</style>", html, re.IGNORECASE | re.DOTALL)
+    if len(blocs) < 2:
+        return html
+    premier = True
+
+    def remplacer(trouve: re.Match) -> str:
+        nonlocal premier
+        if premier:
+            premier = False
+            return "<style>" + "".join(blocs) + "</style>"
+        return ""
+
+    return re.sub(r"<style[^>]*>.*?</style>", remplacer, html, flags=re.IGNORECASE | re.DOTALL)
 
 
 def _clean_links(html: str) -> str:

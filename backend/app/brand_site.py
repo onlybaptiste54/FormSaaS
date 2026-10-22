@@ -384,6 +384,34 @@ def accent_color(couleurs: list[dict]) -> str | None:
     return None
 
 
+def color_roles(couleurs: list[dict]) -> dict:
+    """Attribue un emploi a chaque teinte relevee, sans en inventer aucune.
+
+    Une liste ordonnee ne dit pas quoi faire d'une couleur. Demander « mets un
+    peu plus de couleur, c'est trop blanc » ne menait donc a rien : le modele
+    avait cinq valeurs sans savoir laquelle pose un fond doux et laquelle
+    souligne. Chaque role pointe ici vers une couleur reellement presente sur
+    le site, et vaut None quand le site n'en offre pas.
+    """
+    mesures = [(c["value"], *_saturation_lightness(c["value"])) for c in couleurs]
+    neutres = [(v, s, l) for v, s, l in mesures if s < 0.25]
+
+    def plus_clair(candidats):
+        return max(candidats, key=lambda m: m[2])[0] if candidats else None
+
+    def plus_sombre(candidats):
+        return min(candidats, key=lambda m: m[2])[0] if candidats else None
+
+    fond = plus_clair([m for m in neutres if m[2] >= 0.9]) or plus_clair(neutres)
+    encre = plus_sombre([m for m in mesures if m[2] <= 0.35])
+    # Le fond doux casse le blanc sans rien ajouter d'etranger a la marque.
+    fond_doux = plus_clair([m for m in neutres if 0.84 <= m[2] < 0.985 and m[0] != fond])
+    secondaire = plus_clair([m for m in neutres if 0.3 <= m[2] <= 0.75])
+
+    return {"accent": accent_color(couleurs), "fond": fond, "fond_doux": fond_doux,
+            "encre": encre, "secondaire": secondaire}
+
+
 def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
     """Les faits bruts du site : couleurs par rôle, polices, titre, intertitres."""
     page = _Page()
@@ -419,6 +447,7 @@ def extract(html: str, stylesheets: list[str], *, url: str) -> dict:
     return {
         "url": url,
         "accent": accent_color(couleurs),
+        "roles": color_roles(couleurs),
         "images": image_candidates(page, fonds, base_url=url),
         "title": page.title,
         "description": page.description,
