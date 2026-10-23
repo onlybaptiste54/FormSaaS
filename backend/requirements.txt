@@ -1,10 +1,14 @@
-fastapi==0.116.1
+fastapi==0.161.1
+# Epingle explicitement : la faille BadHost (CVE-2026-48710) vit dans Starlette,
+# que FastAPI tire sans borne haute. Sans ce pin, un rebuild peut rebasculer
+# sur une version vulnerable.
+starlette==1.9.0
 uvicorn[standard]==0.35.0
 sqlalchemy==2.0.43
 psycopg[binary]==3.2.9
 pydantic-settings==2.10.1
-PyJWT==2.10.1
+PyJWT==2.15.1
 email-validator==2.2.0
-python-multipart==0.0.20
+python-multipart==0.0.32
 httpx==0.28.1
 bleach[css]==6.4.0

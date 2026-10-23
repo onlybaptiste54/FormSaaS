@@ -1,13 +1,17 @@
 allowBuilds:
   sharp: true
+overrides:
+  # Les failles libvips et librsvg de sharp ne sont corrigees qu'en 0.35.5,
+  # alors que la plage optionnelle de Next accepte encore la ligne 0.34.
+  sharp: 0.35.5
 minimumReleaseAgeExclude:
-  - '@next/env@15.5.24'
-  - '@next/swc-darwin-arm64@15.5.24'
-  - '@next/swc-darwin-x64@15.5.24'
-  - '@next/swc-linux-arm64-gnu@15.5.24'
-  - '@next/swc-linux-arm64-musl@15.5.24'
-  - '@next/swc-linux-x64-gnu@15.5.24'
-  - '@next/swc-linux-x64-musl@15.5.24'
-  - '@next/swc-win32-arm64-msvc@15.5.24'
-  - '@next/swc-win32-x64-msvc@15.5.24'
-  - next@15.5.24
+  - '@next/env@15.5.28'
+  - '@next/swc-darwin-arm64@15.5.28'
+  - '@next/swc-darwin-x64@15.5.28'
+  - '@next/swc-linux-arm64-gnu@15.5.28'
+  - '@next/swc-linux-arm64-musl@15.5.28'
+  - '@next/swc-linux-x64-gnu@15.5.28'
+  - '@next/swc-linux-x64-musl@15.5.28'
+  - '@next/swc-win32-arm64-msvc@15.5.28'
+  - '@next/swc-win32-x64-msvc@15.5.28'
+  - next@15.5.28
