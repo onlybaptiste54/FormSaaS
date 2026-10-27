@@ -129,6 +129,45 @@ def test_public_submissions_are_capped(client):
     assert client.post("/api/public/slug-inconnu/submit", json=payload).status_code == 429
 
 
+def test_the_image_relay_is_capped(client, monkeypatch):
+    """Le relais refait l'appel sortant a chaque requete : il doit etre plafonne.
+
+    La limite passe avant la verification de signature, donc une rafale non
+    signee compte aussi. Le plafond est abaisse ici pour ne pas tirer trois
+    cents requetes dans un test.
+    """
+    monkeypatch.setattr("app.main.BRAND_IMAGES", 3)
+    for attempt in range(3):
+        refused = client.get("/api/brand/image", params={"u": "https://exemple.fr/logo.png", "s": "fausse"})
+        assert refused.status_code == 404, f"appel {attempt}"
+    blocked = client.get("/api/brand/image", params={"u": "https://exemple.fr/logo.png", "s": "fausse"})
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) > 0
+
+
+def test_the_relay_never_fetches_without_a_valid_signature(client, monkeypatch):
+    """Signature fausse : 404 avant tout appel sortant.
+
+    Le nom est remplace dans app.main, ou il est importe : le patcher dans
+    app.brand_site ne changerait rien et ce test passerait a vide.
+    """
+    def jamais(*_args, **_kwargs):
+        raise AssertionError("fetch_image ne doit pas etre appele sans signature valide")
+
+    monkeypatch.setattr("app.main.fetch_image", jamais)
+    assert client.get("/api/brand/image", params={"u": "https://exemple.fr/x.png", "s": "fausse"}).status_code == 404
+
+
+def test_tinycss2_is_declared(client):
+    """brand_site.py l'importe : il ne doit pas dependre d'un extra de bleach."""
+    from pathlib import Path
+
+    declared = Path(__file__).resolve().parents[1] / "requirements.txt"
+    lignes = [ligne.split("==")[0] for ligne in declared.read_text(encoding="utf-8").splitlines()
+              if ligne.strip() and not ligne.startswith("#")]
+    assert "tinycss2" in lignes
+
+
 def test_the_window_counts_per_usage(client):
     """Saturer la connexion ne ferme pas la collecte, et inversement."""
     from app.main import LOGIN_FAILURES

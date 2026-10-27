@@ -61,6 +61,12 @@ LOGIN_FAILURES, LOGIN_WINDOW = 10, 15 * 60
 # assez serré pour qu'un script n'inonde pas la boîte de réception de faux
 # consentements.
 SUBMISSIONS, SUBMISSION_WINDOW = 30, 10 * 60
+# Le relais de visuels refait l'appel sortant a chaque requete, sans cache
+# serveur : marteler une URL signee immobilise un worker jusqu'a dix secondes.
+# Large, parce que le navigateur garde l'image un jour et qu'une seule adresse
+# peut porter beaucoup de visiteurs : environ dix visuels par nouveau
+# visiteur, donc trente visiteurs par dix minutes pour une meme sortie.
+BRAND_IMAGES, BRAND_IMAGE_WINDOW = 300, 10 * 60
 
 
 def thank_you_settings(form: Form) -> dict:
@@ -541,13 +547,16 @@ def brand_from_site(data: SiteBrandRequest, user: User = Depends(write_user)):
 
 
 @app.get("/api/brand/image")
-def brand_image(u: str = Query(max_length=2000), s: str = Query(max_length=64)):
+def brand_image(request: Request, u: str = Query(max_length=2000), s: str = Query(max_length=64)):
     """Sert un visuel du site d'un client depuis notre origine.
 
     Publique et sans jeton, puisque les visiteurs de la page doivent la charger,
     mais signee : sans la signature, l'API serait un relais ouvert vers
     n'importe quelle adresse.
     """
+    # Avant la signature : c'est la seule place qui plafonne aussi les requetes
+    # non signees, et donc le travail total de cette route.
+    rate_limit("brand-image", client_ip(request), limit=BRAND_IMAGES, window_seconds=BRAND_IMAGE_WINDOW)
     if not hmac.compare_digest(s, sign_image(u, settings.secret_key)):
         raise HTTPException(404, "Visuel introuvable")
     try:
