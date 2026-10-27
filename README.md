@@ -33,7 +33,7 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 
 ## Fonctionnalités livrées
 
-- Connexion sécurisée par jeton et rôles préparés côté données
+- Connexion sécurisée par jeton, tentatives limitées et rôles appliqués sur chaque écriture
 - Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
 - Création par brief avec Luna via l’API OpenAI Responses : une génération écrit directement le document HTML/CSS complet
 - Un document HTML/CSS par page, assaini avant stockage puis rendu dans la même iframe isolée pour l’éditeur, la page publique et les vignettes
@@ -52,7 +52,8 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Boîte de réception transverse : filtres campagne, formulaire, source et période, recherche plein texte, détail avec preuve de consentement et export CSV UTF-8
 - Bibliothèque : sélection Sillage, collection d’entreprise, aperçus en rendu réel et choix de la campagne d’accueil
 - Diffusion : liens suivis par canal et code d’intégration à copier
-- Données de démonstration réalistes injectées au premier lancement
+- Données de démonstration réalistes injectées au premier lancement, jamais en production
+- Garde-fous d'exploitation : connexion limitée à 10 échecs par quart d'heure et par adresse, collecte publique à 30 envois par dix minutes, un lecteur ne peut rien modifier, les réglages d'entreprise et la suppression d'une réponse restent à un administrateur
 
 ## Architecture
 
@@ -66,23 +67,55 @@ Le front est construit en mode `standalone` puis copié dans une image d’exéc
 
 ## Configuration
 
-Copier `.env.example` vers `.env` pour personnaliser les ports, le mot de passe PostgreSQL, `SECRET_KEY` et la clé OpenAI. `OPENAI_API_KEY` reste exclusivement côté API : ne jamais la préfixer par `NEXT_PUBLIC_`, la placer dans le frontend ou la committer.
+Copier `.env.example` vers `.env` pour personnaliser les ports, le mot de passe PostgreSQL, `SECRET_KEY` et la clé OpenAI.
+
+Avec `ENVIRONMENT=production`, l'API refuse de démarrer tant que `SECRET_KEY` vaut la clé de développement ou fait moins de 32 caractères : cette clé signe les jetons d'authentification **et** le cookie de parcours public, donc une clé connue les rend forgeables. En générer une avec `python -c "import secrets; print(secrets.token_hex(32))"`. Le démarrage rapide ci-dessus reste inchangé : il tourne en `development`.
+
+`OPENAI_API_KEY` reste exclusivement côté API : ne jamais la préfixer par `NEXT_PUBLIC_`, la placer dans le frontend ou la committer.
 
 Variables principales :
 
 | Variable | Valeur locale par défaut |
 | --- | --- |
+| `ENVIRONMENT` | `development` |
 | `WEB_PORT` | `3000` |
 | `API_PORT` | `8000` |
 | `POSTGRES_DB` | `sillage` |
 | `POSTGRES_USER` | `sillage` |
 | `POSTGRES_PASSWORD` | `sillage_dev` |
-| `SECRET_KEY` | clé de développement à remplacer |
+| `SECRET_KEY` | clé de développement, refusée si `ENVIRONMENT=production` |
 | `OPENAI_API_KEY` | vide : Luna utilise le générateur local |
 | `OPENAI_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_TIMEOUT_SECONDS` | `90` |
 
 Avec une clé configurée, Luna transmet à OpenAI le brief initial, le HTML courant, les six derniers échanges Luna, les captures et images jointes au dialogue, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque. La création d’une page lance une recherche web ciblée ; les retouches peuvent aussi chercher sur le web quand le brief le demande. Le champ facultatif « Site web à consulter » fournit une adresse HTTPS à prendre en compte. Luna doit rendre cliquables les sources des faits qu’elle reprend dans la page. Les images jointes aux retouches restent dans les versions pour conserver la conversation après rechargement. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes ne stockent pas de contenu chez OpenAI. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; sans clé, la création reste disponible en mode local et l’interface le signale.
+
+## Mise en ligne
+
+Un déploiement réel se distingue du développement par une seule variable :
+
+```bash
+ENVIRONMENT=production
+```
+
+Elle change trois choses :
+
+1. L'API refuse de démarrer tant que `SECRET_KEY` vaut la clé de développement ou fait moins de 32 caractères.
+2. Aucune donnée de démonstration n'est créée, donc **le compte `demo@sillage.fr` n'existe pas**. Un compte de démonstration connu annulerait le contrôle des rôles.
+3. Au premier démarrage sur une base vide, l'API journalise la commande à lancer pour ouvrir la porte.
+
+Créer le premier administrateur, une seule fois :
+
+```bash
+docker compose exec api python -m app.admin --email vous@exemple.fr --company "Votre entreprise"
+```
+
+Le mot de passe est demandé sans être affiché ; il doit faire 12 caractères au minimum. Pour un déploiement automatisé, le passer par `ADMIN_PASSWORD` plutôt que par `--password`, qui resterait dans l'historique du shell. La commande crée l'entreprise et son administrateur, et refuse de s'exécuter dès qu'un compte existe : elle ne peut pas servir à s'ajouter à une installation en service. Les membres suivants s'ajouteront par le parcours d'invitation, qui reste à construire.
+
+Deux limites à connaître avant d'ouvrir au public :
+
+- **La limitation de débit est comptée en mémoire, par processus.** L'image lance deux workers, donc les seuils réels sont doublés. Au-delà d'un petit trafic, il faudra un compteur partagé.
+- **`X-Forwarded-For` n'est pas lu**, parce qu'une limite qu'un en-tête suffit à contourner n'en est pas une. Derrière un reverse proxy, toutes les requêtes porteraient donc l'adresse du proxy : lancer uvicorn avec `--proxy-headers --forwarded-allow-ips=<adresse du proxy>` le jour où un proxy est ajouté.
 
 ## Développement sans Docker
 

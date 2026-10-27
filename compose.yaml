@@ -21,6 +21,8 @@ services:
       context: ./backend
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sillage}:${POSTGRES_PASSWORD:-sillage_dev}@db:5432/${POSTGRES_DB:-sillage}
+      # ENVIRONMENT=production exige une vraie SECRET_KEY : l'API refuse de demarrer sans.
+      ENVIRONMENT: ${ENVIRONMENT:-development}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

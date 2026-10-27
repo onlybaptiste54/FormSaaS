@@ -63,6 +63,16 @@ class LoginIn(BaseModel):
     password: str
 
 
+class FirstAdminIn(BaseModel):
+    """Premier compte d'une mise en ligne : saisi en ligne de commande."""
+
+    email: EmailStr
+    # Un administrateur créé à la main mérite mieux que huit caractères.
+    password: str = Field(min_length=12, max_length=256)
+    full_name: str = Field(min_length=2, max_length=120)
+    company_name: str = Field(min_length=2, max_length=120)
+
+
 class CampaignCreate(BaseModel):
     """La campagne est un dossier : aucune IA a ce niveau."""
 

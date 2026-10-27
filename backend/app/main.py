@@ -24,7 +24,7 @@ from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
 from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page
 from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
-from .security import create_token, current_user, verify_password
+from .security import admin_user, client_ip, create_token, current_user, ensure_production_secrets, rate_limit, verify_password, write_user
 from .seed import seed
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
 
@@ -33,6 +33,9 @@ from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_templa
 async def lifespan(_: FastAPI):
     # Les mesures de Luna (duree, tentatives, tokens) doivent etre visibles.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    # Avant la base : un démarrage en production avec la clé de développement
+    # rendrait les jetons et le cookie de parcours forgeables.
+    ensure_production_secrets()
     initialize_schema()
     with SessionLocal() as db:
         seed(db)
@@ -47,6 +50,14 @@ EDITABLE_KEYS = ("name", "description", "fields", "design", "content", "thank_yo
 
 # Nombre de versions conservees par formulaire.
 VERSION_LIMIT = 30
+
+# Limitation de débit, par adresse IP. Seules les tentatives ratées comptent
+# pour la connexion : un usage normal n'est jamais bloqué.
+LOGIN_FAILURES, LOGIN_WINDOW = 10, 15 * 60
+# Assez large pour la tablette d'un comptoir qui enchaîne les inscriptions,
+# assez serré pour qu'un script n'inonde pas la boîte de réception de faux
+# consentements.
+SUBMISSIONS, SUBMISSION_WINDOW = 30, 10 * 60
 
 
 def thank_you_settings(form: Form) -> dict:
@@ -395,9 +406,12 @@ def health():
 
 
 @app.post("/api/auth/login")
-def login(data: LoginIn, db: Session = Depends(get_db)):
+def login(data: LoginIn, request: Request, db: Session = Depends(get_db)):
+    ip = client_ip(request)
+    rate_limit("login", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW, record=False)
     user = db.scalar(select(User).where(User.email == data.email.lower()))
     if not user or not verify_password(data.password, user.password_hash):
+        rate_limit("login", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW)
         raise HTTPException(401, "Email ou mot de passe incorrect")
     return {"access_token": create_token(user), "token_type": "bearer"}
 
@@ -419,7 +433,7 @@ def luna_status(_: User = Depends(current_user)):
 
 
 @app.patch("/api/company")
-def update_company(data: CompanyUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def update_company(data: CompanyUpdate, db: Session = Depends(get_db), user: User = Depends(admin_user)):
     for key, value in data.model_dump(exclude_none=True).items():
         setattr(user.company, key, value)
     db.commit()
@@ -427,7 +441,7 @@ def update_company(data: CompanyUpdate, db: Session = Depends(get_db), user: Use
 
 
 @app.post("/api/company/brand/analyze")
-def analyze_company_brand(data: BrandAnalyzeRequest, user: User = Depends(current_user)):
+def analyze_company_brand(data: BrandAnalyzeRequest, user: User = Depends(write_user)):
     """Propose un profil de marque : rien n'est enregistre tant qu'il n'est pas valide."""
     try:
         return analyze_brand(
@@ -499,7 +513,7 @@ def list_campaigns(archived: bool = False, db: Session = Depends(get_db), user: 
 
 
 @app.post("/api/campaigns", status_code=201)
-def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     campaign = Campaign(company_id=user.company_id, creator_id=user.id, **data.model_dump())
     db.add(campaign)
     db.commit()
@@ -513,7 +527,7 @@ def get_campaign(campaign_id: str, db: Session = Depends(get_db), user: User = D
 
 
 @app.patch("/api/campaigns/{campaign_id}")
-def update_campaign(campaign_id: str, data: CampaignUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def update_campaign(campaign_id: str, data: CampaignUpdate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     campaign = owned_campaign(campaign_id, db, user)
     for key, value in data.model_dump(exclude_none=True).items():
         setattr(campaign, key, value)
@@ -579,7 +593,7 @@ def list_forms(campaign_id: str, db: Session = Depends(get_db), user: User = Dep
 
 
 @app.post("/api/campaigns/{campaign_id}/forms", status_code=201)
-def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     campaign = owned_campaign(campaign_id, db, user)
     try:
         identity = luna_identity(user.company)
@@ -632,7 +646,7 @@ def get_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(c
 
 
 @app.patch("/api/forms/{form_id}")
-def update_form(form_id: str, data: FormUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def update_form(form_id: str, data: FormUpdate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     form = owned_form(form_id, db, user)
     changes = data.model_dump(exclude_none=True)
     legacy_thank_you = changes.pop("thank_you", None)
@@ -711,7 +725,7 @@ def get_form_tunnel(form_id: str, db: Session = Depends(get_db), user: User = De
 
 
 @app.post("/api/forms/{form_id}/tunnel/pages", status_code=201)
-def create_tunnel_page(form_id: str, data: TunnelPageCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def create_tunnel_page(form_id: str, data: TunnelPageCreate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     form = owned_form(form_id, db, user)
     tunnel = form_tunnel(db, form)
     pages = sorted(tunnel.pages, key=lambda item: item.position)
@@ -760,7 +774,7 @@ def create_tunnel_page(form_id: str, data: TunnelPageCreate, db: Session = Depen
 
 
 @app.patch("/api/forms/{form_id}/tunnel/pages/{page_id}")
-def update_tunnel_page(form_id: str, page_id: str, data: TunnelPageUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def update_tunnel_page(form_id: str, page_id: str, data: TunnelPageUpdate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     form = owned_form(form_id, db, user)
     tunnel = form_tunnel(db, form)
     page = next((item for item in tunnel.pages if item.id == page_id), None)
@@ -890,7 +904,7 @@ def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revisio
 
 
 @app.post("/api/forms/{form_id}/luna/refine")
-def refine_with_luna(form_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def refine_with_luna(form_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(write_user)):
     if not settings.openai_api_key:
         raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier la page avec Luna.")
     form = owned_form(form_id, db, user)
@@ -906,7 +920,7 @@ def refine_with_luna(form_id: str, data: LunaRefineRequest, db: Session = Depend
 
 
 @app.post("/api/forms/{form_id}/luna/refine/stream")
-def refine_with_luna_stream(form_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def refine_with_luna_stream(form_id: str, data: LunaRefineRequest, db: Session = Depends(get_db), user: User = Depends(write_user)):
     if not settings.openai_api_key:
         raise HTTPException(503, "Ajoutez OPENAI_API_KEY dans votre fichier .env pour modifier la page avec Luna.")
     # Authentification et propriété sont vérifiées avant d'ouvrir le flux.
@@ -948,7 +962,7 @@ def list_versions(form_id: str, db: Session = Depends(get_db), user: User = Depe
 
 
 @app.patch("/api/forms/{form_id}/draft")
-def update_draft(form_id: str, data: DraftUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def update_draft(form_id: str, data: DraftUpdate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     """Edition directe : ce qui est corrige a la main va aussi dans le brouillon."""
     form = owned_form(form_id, db, user)
     changes = data.model_dump(exclude_none=True)
@@ -979,7 +993,7 @@ def update_draft(form_id: str, data: DraftUpdate, db: Session = Depends(get_db),
 
 
 @app.post("/api/forms/{form_id}/draft/publish")
-def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     form = owned_form(form_id, db, user)
     page = form_page(form)
     tunnel = form_tunnel(db, form)
@@ -1025,7 +1039,7 @@ def publish_draft(form_id: str, db: Session = Depends(get_db), user: User = Depe
 
 
 @app.post("/api/forms/{form_id}/draft/discard")
-def discard_draft(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def discard_draft(form_id: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     form = owned_form(form_id, db, user)
     form.draft = None
     for page in form_tunnel(db, form).pages:
@@ -1037,7 +1051,7 @@ def discard_draft(form_id: str, db: Session = Depends(get_db), user: User = Depe
 
 
 @app.post("/api/forms/{form_id}/versions/{version_id}/restore")
-def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     """Annuler, c'est revenir a une version precedente : rien n'est perdu."""
     form = owned_form(form_id, db, user)
     version = db.get(FormVersion, version_id)
@@ -1066,7 +1080,7 @@ def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db)
 
 
 @app.post("/api/forms/{form_id}/duplicate", status_code=201)
-def duplicate_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def duplicate_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     source = owned_form(form_id, db, user)
     name = f"{source.name} - copie"
     copy = Form(campaign_id=source.campaign_id, creator_id=user.id, name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=thank_you_settings(source), visibility="private")
@@ -1110,7 +1124,7 @@ def library(db: Session = Depends(get_db), user: User = Depends(current_user)):
 
 
 @app.post("/api/library/featured/{template_key}/save", status_code=201)
-def save_featured_template(template_key: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def save_featured_template(template_key: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     source = curated_template(template_key)
     if not source:
         raise HTTPException(404, "Modèle introuvable")
@@ -1135,7 +1149,7 @@ def save_featured_template(template_key: str, db: Session = Depends(get_db), use
 
 
 @app.post("/api/library/featured/{template_key}/use", status_code=201)
-def use_featured_template(template_key: str, data: TemplateUse, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def use_featured_template(template_key: str, data: TemplateUse, db: Session = Depends(get_db), user: User = Depends(write_user)):
     source = curated_template(template_key)
     if not source:
         raise HTTPException(404, "Modèle introuvable")
@@ -1149,7 +1163,7 @@ def use_featured_template(template_key: str, data: TemplateUse, db: Session = De
 
 
 @app.post("/api/library/templates/{template_id}/use", status_code=201)
-def use_saved_template(template_id: str, data: TemplateUse, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def use_saved_template(template_id: str, data: TemplateUse, db: Session = Depends(get_db), user: User = Depends(write_user)):
     template = db.get(Template, template_id)
     if not template or template.company_id != user.company_id:
         raise HTTPException(404, "Modèle introuvable")
@@ -1261,7 +1275,7 @@ def csv_response(rows: list[FormResponse], filename: str, *, with_form: bool = F
 
 
 @app.delete("/api/responses/{response_id}", status_code=204)
-def delete_response(response_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def delete_response(response_id: str, db: Session = Depends(get_db), user: User = Depends(admin_user)):
     response = db.get(FormResponse, response_id)
     if not response or response.form.campaign.company_id != user.company_id:
         raise HTTPException(404, "Réponse introuvable")
@@ -1379,6 +1393,7 @@ def advance_public_page(slug: str, data: PublicPageAdvance, request: Request, re
 
 @app.post("/api/public/{slug}/submit", status_code=201)
 def submit(slug: str, data: SubmitResponse, request: Request, response: Response, db: Session = Depends(get_db)):
+    rate_limit("submit", client_ip(request), limit=SUBMISSIONS, window_seconds=SUBMISSION_WINDOW)
     form = live_form(slug, db)
     if not form:
         raise HTTPException(404, "Ce formulaire n'accepte pas de réponse")
