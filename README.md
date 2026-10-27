@@ -37,6 +37,7 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Deux pages générées par Luna avec le profil de marque, aperçu ordinateur/mobile, retouches en langage naturel, brouillons et versions précédentes
 - Publication par lien, mise en pause, correction du lien final et export HTML ZIP du tunnel publié
 - Statistiques par tunnel et par période : entrées, passage entre pages, clics finaux, évolution quotidienne et sources (`?source=` ou `?utm_source=`)
+- Mesure de parcours sans donnée personnelle : ni adresse IP ni user-agent enregistrés, événements dédupliqués par session et par étape, et oubliés au-delà de treize mois
 - Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.
 - Connexion sécurisée par jeton, tentatives limitées et rôles appliqués sur chaque écriture
 - Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
@@ -58,7 +59,7 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Bibliothèque : sélection Sillage, collection d’entreprise, aperçus en rendu réel et choix de la campagne d’accueil
 - Diffusion : liens suivis par canal et code d’intégration à copier
 - Données de démonstration réalistes injectées au premier lancement, jamais en production
-- Garde-fous d'exploitation : connexion limitée à 10 échecs par quart d'heure et par adresse, collecte publique à 30 envois par dix minutes, un lecteur ne peut rien modifier, les réglages d'entreprise et la suppression d'une réponse restent à un administrateur
+- Garde-fous d'exploitation : connexion limitée à 10 échecs par quart d'heure et par adresse, collecte publique à 30 envois par dix minutes, parcours public d'un tunnel de vente à 120 appels par dix minutes, un lecteur ne peut rien modifier, les réglages d'entreprise et la suppression d'une réponse restent à un administrateur
 
 ## Architecture
 
