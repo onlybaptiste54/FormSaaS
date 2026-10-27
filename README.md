@@ -1,6 +1,6 @@
 # Sillage
 
-Sillage est un SaaS français de création et de diffusion de formulaires. Une campagne regroupe les formulaires d’un client, d’un événement ou d’une opération. L’utilisateur décrit chaque formulaire à Luna en langage naturel ; l’application prépare un formulaire court, cohérent avec la marque et conforme aux principes RGPD du cahier des charges.
+Sillage aide une entreprise à créer et publier un tunnel de vente guidé. L’utilisateur décrit son offre, son public, ses arguments et l’action finale souhaitée ; Luna génère deux pages aux couleurs de l’entreprise. Sillage mesure les entrées, les passages entre pages et les clics vers le lien externe final. Les formulaires et campagnes historiques restent disponibles.
 
 La documentation stratégique du projet — concept produit, étude de marché et business plan — est dans [`docs/`](docs/README.md).
 
@@ -33,6 +33,11 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 
 ## Fonctionnalités livrées
 
+- Assistant en trois étapes pour créer un tunnel de vente : offre, arguments et destination de l’action finale
+- Deux pages générées par Luna avec le profil de marque, aperçu ordinateur/mobile, retouches en langage naturel, brouillons et versions précédentes
+- Publication par lien, mise en pause, correction du lien final et export HTML ZIP du tunnel publié
+- Statistiques par tunnel et par période : entrées, passage entre pages, clics finaux, évolution quotidienne et sources (`?source=` ou `?utm_source=`)
+- Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.
 - Connexion sécurisée par jeton, tentatives limitées et rôles appliqués sur chaque écriture
 - Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
 - Création par brief avec Luna via l’API OpenAI Responses : une génération écrit directement le document HTML/CSS complet
@@ -85,10 +90,10 @@ Variables principales :
 | `POSTGRES_PASSWORD` | `sillage_dev` |
 | `SECRET_KEY` | clé de développement, refusée si `ENVIRONMENT=production` |
 | `OPENAI_API_KEY` | vide : Luna utilise le générateur local |
-| `OPENAI_MODEL` | `gpt-5.4-mini` |
+| `OPENAI_MODEL` | `gpt-6-luna` |
 | `OPENAI_TIMEOUT_SECONDS` | `90` |
 
-Avec une clé configurée, Luna transmet à OpenAI le brief initial, le HTML courant, les six derniers échanges Luna, les captures et images jointes au dialogue, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque. La création d’une page lance une recherche web ciblée ; les retouches peuvent aussi chercher sur le web quand le brief le demande. Le champ facultatif « Site web à consulter » fournit une adresse HTTPS à prendre en compte. Luna doit rendre cliquables les sources des faits qu’elle reprend dans la page. Les images jointes aux retouches restent dans les versions pour conserver la conversation après rechargement. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes ne stockent pas de contenu chez OpenAI. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite ; sans clé, la création reste disponible en mode local et l’interface le signale.
+Avec une clé configurée, Luna transmet à OpenAI le brief initial, le HTML courant, les six derniers échanges Luna, les captures et images jointes au dialogue, et l’identité publique de la marque : nom commercial, secteur, ton, couleurs et profil de marque. La création d’une page lance une recherche web ciblée ; les retouches peuvent aussi chercher sur le web quand le brief le demande. Le champ facultatif « Site web à consulter » fournit une adresse HTTPS à prendre en compte. Luna doit rendre cliquables les sources des faits qu’elle reprend dans la page. Les images jointes aux retouches restent dans les versions pour conserver la conversation après rechargement. Le SIRET, l’adresse, le contact DPO et les réponses des prospects ne sont jamais transmis. Les requêtes ne stockent pas de contenu chez OpenAI. Une clé invalide ou une indisponibilité OpenAI produit une erreur explicite. Les formulaires historiques gardent leur générateur local sans clé ; la création d’un tunnel de vente avec Luna exige une clé OpenAI.
 
 ## Mise en ligne
 

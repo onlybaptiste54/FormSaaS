@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     secret_key: str = DEV_SECRET_KEY
     cors_origins: str = "http://localhost:3000"
     openai_api_key: str = ""
-    openai_model: str = "gpt-5.4-mini"
+    openai_model: str = "gpt-6-luna"
     openai_timeout_seconds: float = 90.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

@@ -311,7 +311,7 @@ def analyze_brand(
     *,
     notes: str = "",
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -364,7 +364,7 @@ def analyze_site_brand(
     identity: str | dict,
     *,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -687,6 +687,7 @@ def _page_request(
     correction: str = "",
     include_images: bool = True,
     force_web_search: bool = False,
+    page_instructions: str = LUNA_PAGE_INSTRUCTIONS,
 ) -> dict:
     # Put repeatable context ahead of the current page and request for prompt caching.
     stable = {
@@ -739,7 +740,7 @@ def _page_request(
     safety_source = str(identity.get("name") or "sillage-user")
     return {
         "model": model,
-        "instructions": LUNA_PAGE_INSTRUCTIONS,
+        "instructions": page_instructions,
         "input": input_messages,
         "tools": [{"type": "web_search", "search_context_size": "low"}],
         "tool_choice": "required" if force_web_search else "auto",
@@ -763,10 +764,11 @@ def revise_page(
     screenshot_data_url: str | None = None,
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
     force_web_search: bool = False,
+    page_instructions: str = LUNA_PAGE_INSTRUCTIONS,
 ) -> dict:
     """Ask Luna to rewrite a complete page or one selected region.
 
@@ -792,6 +794,7 @@ def revise_page(
             screenshot=screenshot, images=[image for image in attachments if image],
             model=model, correction=correction, include_images=attempt == 1,
             force_web_search=force_web_search,
+            page_instructions=page_instructions,
         )
         response = _request_openai(request, api_key=api_key, timeout_seconds=timeout_seconds, transport=transport)
         try:
@@ -893,7 +896,7 @@ def stream_page_revision(
     screenshot_data_url: str | None = None,
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 90.0,
     transport: httpx.BaseTransport | None = None,
 ):
@@ -1019,7 +1022,7 @@ def generate_page(
     website_url: str = "",
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -1050,7 +1053,7 @@ def generate_campaign(
     context: str = "",
     images: list[str] | None = None,
     api_key: str = "",
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -1147,7 +1150,7 @@ def revise_campaign(
     screenshot_data_url: str | None = None,
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-6-luna",
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:

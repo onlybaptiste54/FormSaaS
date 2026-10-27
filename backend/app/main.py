@@ -29,6 +29,7 @@ from .page_document import blank_form_html, legacy_to_html, prepare_page, render
 from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SiteBrandRequest, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import admin_user, client_ip, create_token, current_user, ensure_production_secrets, rate_limit, verify_password, write_user
 from .seed import seed
+from .sales import router as sales_router
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
 
 
@@ -47,6 +48,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Sillage API", version="1.0.0", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(sales_router)
 
 
 EDITABLE_KEYS = ("name", "description", "fields", "design", "content", "thank_you")
@@ -576,7 +578,9 @@ def stats(db: Session = Depends(get_db), user: User = Depends(current_user)):
         .where(Campaign.company_id == user.company_id, Campaign.archived.is_(False), Form.archived.is_(False))
     ).all()
     ids = [f.id for f in forms]
-    campaigns = db.scalar(select(func.count(Campaign.id)).where(Campaign.company_id == user.company_id, Campaign.archived.is_(False))) or 0
+    campaigns = db.scalar(select(func.count(Campaign.id)).where(
+        Campaign.company_id == user.company_id, Campaign.archived.is_(False),
+        ~Campaign.tunnels.any(Tunnel.kind == "sales"))) or 0
     total = db.scalar(select(func.count(FormResponse.id)).where(FormResponse.form_id.in_(ids))) if ids else 0
     since = datetime.now(timezone.utc) - timedelta(days=7)
     week = db.scalar(select(func.count(FormResponse.id)).where(FormResponse.form_id.in_(ids), FormResponse.created_at >= since)) if ids else 0
@@ -620,7 +624,10 @@ def owned_campaign(campaign_id: str, db: Session, user: User) -> Campaign:
 
 @app.get("/api/campaigns")
 def list_campaigns(archived: bool = False, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    campaigns = db.scalars(select(Campaign).where(Campaign.company_id == user.company_id, Campaign.archived == archived).order_by(desc(Campaign.updated_at))).all()
+    campaigns = db.scalars(select(Campaign).where(
+        Campaign.company_id == user.company_id, Campaign.archived == archived,
+        ~Campaign.tunnels.any(Tunnel.kind == "sales")
+    ).order_by(desc(Campaign.updated_at))).all()
     summaries = campaign_summaries(db, list(campaigns))
     return [campaign_json(c, summaries[c.id]) for c in campaigns]
 

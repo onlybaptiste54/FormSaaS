@@ -1,6 +1,8 @@
 # Documentation stratégique — Sillage
 
-Documentation produit et business de **Sillage** : la création de formulaires conformes au régime de consentement français, à la charte graphique du client — puis, sur le même socle, la génération de landing pages.
+Documentation produit et business historique de **Sillage**. Le produit inclut désormais un parcours dédié aux tunnels de vente guidés par Luna ; voir le [README principal](../README.md) pour le fonctionnement actuel.
+
+**Décision produit du 27 octobre 2026 :** la priorité de développement est le tunnel de vente (pages de découverte et d'offre, action externe, publication et statistiques liées au parcours). Les formulaires existants restent disponibles. Les sections ci-dessous conservent le raisonnement antérieur centré sur les formulaires ; elles ne décrivent plus la priorité actuelle.
 
 Aucun code ici : concept, marché, business. Le code de l'application est à la racine du dépôt (`backend/`, `frontend/`), documenté dans le [README principal](../README.md).
 

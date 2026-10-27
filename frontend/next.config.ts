@@ -27,7 +27,7 @@ const nextConfig: NextConfig = {
     return [{ source: "/media/brand", destination: `${apiInternalOrigin}/api/brand/image` }];
   },
   async headers() {
-    return [{ source: "/forms/:slug", headers: [{ key: "Content-Security-Policy", value: publicPageCsp }] }];
+    return ["/forms/:slug", "/t/:slug"].map(source => ({ source, headers: [{ key: "Content-Security-Policy", value: publicPageCsp }] }));
   },
 };
 

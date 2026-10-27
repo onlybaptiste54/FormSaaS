@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, FileCheck2, FileText, FolderOpen, MousePointerClick, Plus } from "lucide-react";
+import { ArrowRight, FileCheck2, FileText, FolderOpen, MousePointerClick, Plus, Waypoints } from "lucide-react";
 import { PageHeader, useMe } from "@/components/shell";
 import { ErrorState, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
-import type { Campaign, Stats } from "@/lib/types";
+import type { Campaign, SalesOverview, SalesTunnel, Stats } from "@/lib/types";
 
 const day = new Intl.DateTimeFormat("fr-FR", { weekday: "short" });
 const today = new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" });
@@ -15,17 +15,28 @@ export default function Dashboard() {
   const me = useMe();
   const [stats, setStats] = useState<Stats | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [funnels, setFunnels] = useState<SalesTunnel[]>([]);
+  const [sales, setSales] = useState<SalesOverview | null>(null);
   const [error, setError] = useState("");
   const load = () => {
     setError("");
-    Promise.all([api<Stats>("/stats"), api<Campaign[]>("/campaigns")])
-      .then(([s, c]) => { setStats(s); setCampaigns(c); })
+    Promise.all([api<Stats>("/stats"), api<Campaign[]>("/campaigns"), api<SalesTunnel[]>("/sales-funnels"), api<SalesOverview>("/sales-funnels/overview")])
+      .then(([s, c, f, overview]) => { setStats(s); setCampaigns(c); setFunnels(f); setSales(overview); })
       .catch(err => setError(err instanceof Error ? err.message : "Une erreur est survenue"));
   };
   useEffect(() => { load(); }, []);
   const firstName = me?.full_name.split(" ")[0];
-  return <div className="page-wrap dashboard-page"><PageHeader eyebrow={today.format(new Date()).toUpperCase()} title={firstName ? `Bonjour ${firstName}.` : "Bonjour."} description="Voici ce qui s’est passé depuis votre dernière visite." actions={<Link href="/campaigns/new" className="button button-primary"><Plus size={18} />Créer une campagne</Link>} />
-    {error ? <ErrorState message={error} onRetry={load} /> : !stats ? <Loading /> : <>
+  return <div className="page-wrap dashboard-page"><PageHeader eyebrow={today.format(new Date()).toUpperCase()} title={firstName ? `Bonjour ${firstName}.` : "Bonjour."} description="Suivez vos tunnels et les actions de vos visiteurs." actions={<Link href="/funnels/new" className="button button-primary"><Plus size={18} />Créer un tunnel</Link>} />
+    {error ? <ErrorState message={error} onRetry={load} /> : !stats || !sales ? <Loading /> : <>
+      <section className="panel sales-dashboard-panel"><div className="panel-head"><div><p className="eyebrow">TUNNELS DE VENTE</p><h2>Vos parcours</h2></div><Link href="/funnels" className="text-link">Tout voir <ArrowRight size={16}/></Link></div>{funnels.length ? <div className="sales-dashboard-list">{funnels.slice(0, 3).map(funnel => <Link href={`/funnels/${funnel.id}`} key={funnel.id}><Waypoints size={19}/><span><strong>{funnel.name}</strong><small>{funnel.status === "active" ? "En ligne" : "Brouillon"} · {funnel.goal_label}</small></span><ArrowRight size={16}/></Link>)}</div> : <p className="muted">Aucun tunnel pour le moment. Commencez par décrire votre offre à Luna.</p>}</section>
+      <p className="eyebrow sales-legacy-heading">PERFORMANCE DES TUNNELS · 30 DERNIERS JOURS</p>
+      <section className="metric-grid">
+        <Metric icon={<Waypoints/>} label="Tunnels en ligne" value={sales.active.toString()} note={`${sales.drafts} brouillon${sales.drafts > 1 ? "s" : ""}`} />
+        <Metric icon={<MousePointerClick/>} label="Entrées" value={sales.visits.toLocaleString("fr-FR")} note="Parcours distincts" />
+        <Metric icon={<ArrowRight/>} label="Clics finaux" value={sales.goals.toLocaleString("fr-FR")} note="Vers vos liens externes" />
+        <Metric icon={<FileCheck2/>} label="Taux de passage" value={`${sales.conversion} %`} note="Entrée → clic final" />
+      </section>
+      <p className="eyebrow sales-legacy-heading">FORMULAIRES ET RÉPONSES</p>
       <section className="metric-grid">
         <Metric icon={<FolderOpen />} label="Campagnes" value={stats.campaigns.toString()} note={`${stats.forms} formulaire${stats.forms > 1 ? "s" : ""}`} />
         <Metric icon={<FileText />} label="Formulaires en ligne" value={stats.active.toString()} note={stats.drafts ? `${stats.drafts} en pause` : "Tout est publié"} />

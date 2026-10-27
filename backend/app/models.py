@@ -94,12 +94,18 @@ class Tunnel(Base):
     name: Mapped[str] = mapped_column(String(140))
     slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="draft")
+    kind: Mapped[str] = mapped_column(String(20), default="legacy_form")
+    brief: Mapped[dict] = mapped_column(JSON, default=dict)
+    identity: Mapped[dict] = mapped_column(JSON, default=dict)
+    goal_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    goal_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
     entry_page_id: Mapped[str | None] = mapped_column(ForeignKey("pages.id", use_alter=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
     campaign: Mapped[Campaign] = relationship(back_populates="tunnels")
     pages: Mapped[list["Page"]] = relationship(back_populates="tunnel", foreign_keys="Page.tunnel_id", cascade="all, delete-orphan", order_by="Page.position")
+    events: Mapped[list["TunnelEvent"]] = relationship(back_populates="tunnel", cascade="all, delete-orphan")
     entry_page: Mapped["Page | None"] = relationship(foreign_keys=[entry_page_id], post_update=True)
 
 
@@ -168,6 +174,38 @@ class Page(Base):
 
     form: Mapped[Form | None] = relationship(back_populates="pages", foreign_keys=[form_id])
     tunnel: Mapped[Tunnel | None] = relationship(back_populates="pages", foreign_keys=[tunnel_id])
+    versions: Mapped[list["PageVersion"]] = relationship(back_populates="page", cascade="all, delete-orphan", order_by="PageVersion.created_at")
+
+
+class PageVersion(Base):
+    """Published snapshots for sales pages; restoration writes to a draft."""
+
+    __tablename__ = "page_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    page_id: Mapped[str] = mapped_column(ForeignKey("pages.id"), index=True)
+    html: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    page: Mapped[Page] = relationship(back_populates="versions")
+
+
+class TunnelEvent(Base):
+    """One event per journey, step and action, with a stable deduplication key."""
+
+    __tablename__ = "tunnel_events"
+    __table_args__ = (UniqueConstraint("event_key", name="uq_tunnel_event_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tunnel_id: Mapped[str] = mapped_column(ForeignKey("tunnels.id"), index=True)
+    page_id: Mapped[str] = mapped_column(ForeignKey("pages.id"), index=True)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_key: Mapped[str] = mapped_column(String(160))
+    kind: Mapped[str] = mapped_column(String(30))
+    source: Mapped[str] = mapped_column(String(80), default="Lien direct")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    tunnel: Mapped[Tunnel] = relationship(back_populates="events")
 
 
 class FormVersion(Base):

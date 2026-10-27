@@ -79,6 +79,11 @@ def upgrade(connection):
     add_column(connection, "form_versions", "screenshot_data_url", "TEXT")
     add_column(connection, "form_versions", "images", "JSON")
     add_column(connection, "forms", "identity", "JSON")
+    add_column(connection, "tunnels", "kind", "VARCHAR(20) DEFAULT 'legacy_form'")
+    add_column(connection, "tunnels", "brief", "JSON")
+    add_column(connection, "tunnels", "identity", "JSON")
+    add_column(connection, "tunnels", "goal_url", "VARCHAR(2048)")
+    add_column(connection, "tunnels", "goal_label", "VARCHAR(100)")
 
     if legacy:
         split_campaigns_into_forms(connection)

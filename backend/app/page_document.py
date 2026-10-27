@@ -20,7 +20,7 @@ from bleach.css_sanitizer import CSSSanitizer
 
 MAX_PAGE_HTML = 250_000
 _TAGS = frozenset("a abbr article aside b blockquote br button caption cite code col colgroup dd del details div dl dt em fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr i img input label legend li main mark nav ol option p picture pre q s section select small source span strong sub summary sup table tbody td textarea th thead time title tr u ul video".split()) | {"style"}
-_GLOBAL_ATTRS = frozenset("class id title lang dir role aria-label aria-labelledby aria-describedby aria-hidden aria-pressed tabindex data-sillage data-sillage-next data-sillage-region data-luna-id data-field data-rating style".split())
+_GLOBAL_ATTRS = frozenset("class id title lang dir role aria-label aria-labelledby aria-describedby aria-hidden aria-pressed tabindex data-sillage data-sillage-next data-sillage-goal data-sillage-region data-luna-id data-field data-rating style".split())
 _TAG_ATTRS = {
     "a": {"href", "target", "rel"}, "img": {"src", "alt", "width", "height", "loading"},
     "source": {"src", "type", "media"}, "video": {"poster", "controls", "width", "height"},

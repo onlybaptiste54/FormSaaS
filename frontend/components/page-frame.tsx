@@ -10,18 +10,21 @@ export type PageFrameProps = {
   onReady?: (frame: HTMLIFrameElement) => void;
   onSubmit?: (form: HTMLFormElement, data: FormData) => void;
   onNext?: () => void;
+  onGoal?: () => void;
 };
 
 /** One isolated document for the editor, public page, and thumbnails. */
-export function PageFrame({ html, title, mode, className = "", onReady, onSubmit, onNext }: PageFrameProps) {
+export function PageFrame({ html, title, mode, className = "", onReady, onSubmit, onNext, onGoal }: PageFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(480);
   const onReadyRef = useRef(onReady);
   const onSubmitRef = useRef(onSubmit);
   const onNextRef = useRef(onNext);
+  const onGoalRef = useRef(onGoal);
   onReadyRef.current = onReady;
   onSubmitRef.current = onSubmit;
   onNextRef.current = onNext;
+  onGoalRef.current = onGoal;
 
   const connect = useCallback(() => {
     const frame = frameRef.current;
@@ -44,9 +47,14 @@ export function PageFrame({ html, title, mode, className = "", onReady, onSubmit
     doc.addEventListener("submit", submit);
     const next = (event: MouseEvent) => {
       const target = event.target;
+      if ((target as Element | null)?.closest?.("[data-sillage-goal]")) {
+        event.preventDefault();
+        if (mode === "public") onGoalRef.current?.();
+        return;
+      }
       if (!(target as Element | null)?.closest?.("[data-sillage-next]")) return;
-      if (mode !== "public" || !onNextRef.current) return;
       event.preventDefault();
+      if (mode !== "public" || !onNextRef.current) return;
       onNextRef.current();
     };
     doc.addEventListener("click", next);

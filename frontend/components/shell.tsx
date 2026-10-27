@@ -3,13 +3,14 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, BookOpen, CircleHelp, FileText, LayoutDashboard, LogOut, Menu, Plus, Settings, Users, X } from "lucide-react";
+import { BarChart3, BookOpen, CircleHelp, FileText, LayoutDashboard, LogOut, Menu, Plus, Settings, Users, Waypoints, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Me } from "@/lib/types";
 import { Logo } from "./logo";
 
 const items = [
   { href: "/dashboard", label: "Vue d’ensemble", icon: LayoutDashboard },
+  { href: "/funnels", label: "Tunnels de vente", icon: Waypoints },
   { href: "/campaigns", label: "Campagnes", icon: FileText },
   { href: "/responses", label: "Réponses", icon: BarChart3 },
   { href: "/library", label: "Bibliothèque", icon: BookOpen },
@@ -55,7 +56,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <div className="app-shell">
         <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
           <div className="sidebar-head"><Logo /><button className="icon-button sidebar-close" onClick={() => setOpen(false)} aria-label="Fermer"><X size={20} /></button></div>
-          <Link href="/campaigns/new" className="button button-primary sidebar-create"><Plus size={18} />Nouvelle campagne</Link>
+          <Link href="/funnels/new" className="button button-primary sidebar-create"><Plus size={18} />Nouveau tunnel</Link>
           <nav className="main-nav">
             {items.map(({ href, label, icon: Icon }) => <Link key={href} href={href} onClick={() => setOpen(false)} className={pathname === href || (href !== "/dashboard" && pathname.startsWith(`${href}/`)) ? "nav-item active" : "nav-item"}><Icon size={19} /><span>{label}</span></Link>)}
           </nav>
