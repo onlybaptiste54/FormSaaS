@@ -1,9 +1,11 @@
+import logging
 from datetime import date, datetime, timedelta, timezone
 from random import Random
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import is_production
 from .luna import generate_campaign
 from .models import Campaign, Company, Form, FormResponse, Page, Tunnel, User, initial_tunnel_id, thanks_page_id
 from .page_document import legacy_to_html, prepare_page
@@ -35,7 +37,17 @@ PROMPTS = {"survey": "sondage satisfaction note avis", "information": "inscripti
 
 
 def seed(db: Session):
-    if db.scalar(select(User).limit(1)):
+    existing = db.scalar(select(User).limit(1))
+    if is_production():
+        # Un compte de démonstration connu annulerait le contrôle des rôles.
+        if not existing:
+            logging.getLogger(__name__).warning(
+                "Base vide et ENVIRONMENT=production : aucune donnée de démonstration n'est créée. "
+                "Créez le premier compte avec "
+                'python -m app.admin --email vous@exemple.fr --company "Votre entreprise"'
+            )
+        return
+    if existing:
         return
     company = Company(name="Atelier Rivage", legal_name="Atelier Rivage SAS", sector="Services", siret="901 234 567 00018", address="18 rue des Tisserands, 44000 Nantes", dpo_email="bonjour@atelier-rivage.fr")
     db.add(company)
