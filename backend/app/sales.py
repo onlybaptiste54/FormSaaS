@@ -20,10 +20,17 @@ from .database import get_db
 from .luna import LunaAPIError, merge_page_region, revise_page, slugify
 from .models import Campaign, Company, Page, PageVersion, Tunnel, TunnelEvent, User
 from .page_document import prepare_page, render_page, same_document
-from .security import current_user, write_user
+from .security import client_ip, current_user, rate_limit, write_user
 
 
 router = APIRouter()
+
+# Les trois routes du parcours public ecrivent en base a chaque appel. La
+# deduplication borne les lignes d'une session, mais fabriquer des sessions
+# neuves est gratuit : sans plafond, un script gonfle les compteurs et fait
+# grossir tunnel_events sans fin. Un seul seau pour les trois, sinon le budget
+# serait triple. Large : un parcours honnete coute trois a cinq appels.
+JOURNEY_CALLS, JOURNEY_WINDOW = 120, 10 * 60
 
 SALES_PAGE_INSTRUCTIONS = """Tu es Luna, directrice artistique et conceptrice de tunnels de vente.
 Tu produis exclusivement le JSON demandé : message, html et region. Le HTML est un document complet, en français, avec un seul bloc <style> et une composition responsive soignée. Utilise la marque et le brief commercial fournis ; ne crée ni témoignage, ni chiffre, ni garantie, ni certification non fournis. Les pages s'adressent aux visiteurs, sans commentaire sur ton travail. Aucun script, iframe, formulaire, lien de paiement inventé ou ressource externe non fournie. Une image ne peut provenir que de identity.images. Balise les sections avec data-sillage-region. Sur la page d'ouverture, termine par un bouton <button type="button" data-sillage-next>Découvrir l'offre</button>. Sur la page d'offre, termine par un bouton <button type="button" data-sillage-goal>...</button> dont le libellé reprend exactement l'action du brief. Le serveur gère ces actions ; ne leur mets aucune URL. Pour une retouche, garde tout le reste de la page, et réponds avec html vide si la demande est une simple question. Une région partielle doit contenir sa balise racine complète ; region="style" contient le bloc style complet."""
@@ -464,6 +471,7 @@ def public_page(page: Page) -> dict:
 @router.post("/api/public/sales/{slug}/visit")
 def visit_sales_funnel(slug: str, data: SalesJourneyStart, request: Request, response: Response,
                        db: Session = Depends(get_db)):
+    rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
     tunnel = live_tunnel(slug, db)
     previous = journey(request, tunnel)
     sid = previous.get("sid") if previous else str(uuid4())
@@ -479,16 +487,17 @@ def visit_sales_funnel(slug: str, data: SalesJourneyStart, request: Request, res
 
 @router.post("/api/public/sales/{slug}/advance")
 def advance_sales_funnel(slug: str, request: Request, response: Response, db: Session = Depends(get_db)):
+    rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
     tunnel = live_tunnel(slug, db)
     current = journey(request, tunnel)
     page = db.get(Page, current.get("page")) if current else None
-    if not page or page.tunnel_id != tunnel.id or not page.next_page_id:
+    if not page or page.tunnel_id != tunnel.id or not page.next_page_id or not current.get("sid"):
         raise HTTPException(403, "Étape inaccessible")
     next_page = db.get(Page, page.next_page_id)
     if not next_page or next_page.tunnel_id != tunnel.id:
         raise HTTPException(422, "Parcours invalide")
-    record_event(db, tunnel, page, current["sid"], "step_click", current["source"])
-    record_event(db, tunnel, next_page, current["sid"], "page_view", current["source"])
+    record_event(db, tunnel, page, current["sid"], "step_click", current.get("source") or "Lien direct")
+    record_event(db, tunnel, next_page, current["sid"], "page_view", current.get("source") or "Lien direct")
     db.commit()
     set_journey(response, request, {**current, "page": next_page.id})
     return public_page(next_page)
@@ -496,11 +505,12 @@ def advance_sales_funnel(slug: str, request: Request, response: Response, db: Se
 
 @router.post("/api/public/sales/{slug}/goal")
 def sales_goal(slug: str, request: Request, db: Session = Depends(get_db)):
+    rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
     tunnel = live_tunnel(slug, db)
     current = journey(request, tunnel)
     page = db.get(Page, current.get("page")) if current else None
-    if not page or page.tunnel_id != tunnel.id or page.next_page_id or not tunnel.goal_url:
+    if not page or page.tunnel_id != tunnel.id or page.next_page_id or not tunnel.goal_url or not current.get("sid"):
         raise HTTPException(403, "Action inaccessible")
-    record_event(db, tunnel, page, current["sid"], "goal_click", current["source"])
+    record_event(db, tunnel, page, current["sid"], "goal_click", current.get("source") or "Lien direct")
     db.commit()
     return {"url": tunnel.goal_url}

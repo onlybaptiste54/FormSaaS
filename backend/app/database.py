@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import MetaData, create_engine, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -40,6 +41,26 @@ def initialize_schema():
             # reconstruite à moitié et une reprise impossible.
             connection.exec_driver_sql("BEGIN IMMEDIATE")
         upgrade(connection)
+        purge_old_events(connection)
+
+
+# Duree de conservation des evenements de parcours. Treize mois est l'usage
+# courant pour la mesure d'audience ; ces lignes ne portent ni adresse IP ni
+# user-agent, mais une table qui grossit sans fin est un probleme en soi.
+EVENT_RETENTION_DAYS = 395
+
+
+def purge_old_events(connection):
+    """Oublie les evenements de parcours au-dela de la fenetre de conservation.
+
+    Au demarrage, dans la meme transaction verrouillee que la reprise de schema.
+    Avec du volume, il faudra un index sur tunnel_events.created_at et un
+    passage planifie plutot qu'un seul passage par demarrage.
+    """
+    if not inspect(connection).has_table("tunnel_events"):
+        return
+    limit = datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
+    connection.execute(text("DELETE FROM tunnel_events WHERE created_at < :limit"), {"limit": limit})
 
 
 def columns_of(connection, table: str) -> set[str]:

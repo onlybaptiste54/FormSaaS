@@ -12,6 +12,12 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
+
+
+# Un seul literal pour le modele. La production passe toujours
+# settings.openai_model ; ce defaut ne sert qu'aux appels directs et aux tests,
+# et doit rester aligne sur celui de config.py.
+DEFAULT_MODEL = "gpt-6-luna"
 from .page_document import MAX_PAGE_HTML, foreign_images, markdown_leftovers, meta_discourse
 
 
@@ -311,7 +317,7 @@ def analyze_brand(
     *,
     notes: str = "",
     api_key: str,
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -364,7 +370,7 @@ def analyze_site_brand(
     identity: str | dict,
     *,
     api_key: str,
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -764,7 +770,7 @@ def revise_page(
     screenshot_data_url: str | None = None,
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
     force_web_search: bool = False,
@@ -896,7 +902,7 @@ def stream_page_revision(
     screenshot_data_url: str | None = None,
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 90.0,
     transport: httpx.BaseTransport | None = None,
 ):
@@ -1022,7 +1028,7 @@ def generate_page(
     website_url: str = "",
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -1053,7 +1059,7 @@ def generate_campaign(
     context: str = "",
     images: list[str] | None = None,
     api_key: str = "",
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
@@ -1150,7 +1156,7 @@ def revise_campaign(
     screenshot_data_url: str | None = None,
     images: list[str] | None = None,
     api_key: str,
-    model: str = "gpt-6-luna",
+    model: str = DEFAULT_MODEL,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
