@@ -1,4 +1,5 @@
 import csv
+import hmac
 import io
 import json
 import logging
@@ -9,6 +10,7 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 
+import httpx
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,11 +21,12 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import SessionLocal, get_db, initialize_schema
-from .luna import LunaAPIError, analyze_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
+from .brand_site import SiteError, fetch_image, proxy_path, read_site, sign_image, site_name
+from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
-from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page
-from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
+from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page, same_document
+from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SiteBrandRequest, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import admin_user, client_ip, create_token, current_user, ensure_production_secrets, rate_limit, verify_password, write_user
 from .seed import seed
 from .template_catalog import CURATED_TEMPLATES, campaign_fields, curated_template, template_kind, template_payload
@@ -363,6 +366,7 @@ def form_from_template(db: Session, template: dict, user: User, campaign: Campai
     return Form(
         campaign_id=campaign.id,
         creator_id=user.id,
+        identity=luna_identity(user.company),
         name=template["name"],
         slug=unique_slug(db, template["name"]),
         description=template["description"],
@@ -398,6 +402,60 @@ def luna_identity(company: Company) -> dict:
         "accent_color": company.accent_color,
         "brand": company.brand or {},
     }
+
+
+def creation_identity(source: str, website_url: str, company: Company) -> dict:
+    """L'identite que la page appliquera, selon ce que l'utilisateur a choisi.
+
+    La charte d'un client est lue sur son site et remplace celle du compte :
+    une page faite pour un tiers ne doit rien porter de la marque qui la
+    commande. Le dictionnaire vide est un choix, pas une absence de reponse.
+    """
+    if source == "none":
+        return {}
+    if source != "site":
+        return luna_identity(company)
+    if not website_url.strip():
+        raise HTTPException(422, "Indiquez l'adresse du site dont il faut reprendre la charte.")
+    facts = read_site(website_url)
+    nom = site_name(facts)
+    profile = analyze_site_brand(
+        facts,
+        {"name": nom},
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        timeout_seconds=settings.openai_timeout_seconds,
+    )
+    identite = {"name": nom, "tone": profile["tone"], "brand": profile}
+    # L'accent calcule sur le site vaut mieux que le premier element de la
+    # palette, qui est presque toujours un blanc ou un noir de structure.
+    if accent := facts.get("accent"):
+        identite["accent_color"] = accent
+    # Les roles disent quoi faire de chaque teinte : sans eux, « c'est trop
+    # blanc » ne menait a rien, faute de savoir laquelle pose un fond doux.
+    if roles := {cle: valeur for cle, valeur in (facts.get("roles") or {}).items() if valeur}:
+        identite["couleurs"] = roles
+    # Les visuels voyagent avec l'identite : Luna les retrouve a chaque retouche,
+    # et le serveur refuse toute image qui n'en vient pas.
+    if visuels := facts.get("images"):
+        # Les visuels passent par Sillage : une image d'une autre origine
+        # souille le canvas de la capture de zone, qui echoue alors en silence.
+        identite["images"] = [{**visuel, "source": visuel["url"],
+                               "url": proxy_path(visuel["url"], settings.secret_key)}
+                              for visuel in visuels]
+    return identite
+
+
+def page_identity(form: Form) -> dict:
+    """L'identite que cette page applique, figee a sa creation.
+
+    NULL signale un formulaire cree avant que l'identite ne soit figee : il
+    retombe sur celle du compte. Un dictionnaire vide est un choix explicite de
+    n'appliquer aucune identite, et doit le rester.
+    """
+    if form.identity is not None:
+        return form.identity
+    return luna_identity(form.campaign.company)
 
 
 @app.get("/api/health")
@@ -454,6 +512,52 @@ def analyze_company_brand(data: BrandAnalyzeRequest, user: User = Depends(write_
         )
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/api/brand/from-site")
+def brand_from_site(data: SiteBrandRequest, user: User = Depends(write_user)):
+    """Propose une charte lue sur un site public : rien n'est enregistre.
+
+    La reponse rend aussi les elements releves, pour que l'interface montre sur
+    quoi la proposition s'appuie et laisse corriger plutot que deviner.
+    """
+    try:
+        facts = read_site(data.url)
+    except SiteError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Ce site n'a pas répondu.") from exc
+    try:
+        profile = analyze_site_brand(
+            facts,
+            luna_identity(user.company),
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"profile": profile, "evidence": facts}
+
+
+@app.get("/api/brand/image")
+def brand_image(u: str = Query(max_length=2000), s: str = Query(max_length=64)):
+    """Sert un visuel du site d'un client depuis notre origine.
+
+    Publique et sans jeton, puisque les visiteurs de la page doivent la charger,
+    mais signee : sans la signature, l'API serait un relais ouvert vers
+    n'importe quelle adresse.
+    """
+    if not hmac.compare_digest(s, sign_image(u, settings.secret_key)):
+        raise HTTPException(404, "Visuel introuvable")
+    try:
+        contenu, type_mime = fetch_image(u)
+    except SiteError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Ce visuel n'a pas répondu.") from exc
+    return Response(contenu, media_type=type_mime,
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/stats")
@@ -595,10 +699,17 @@ def list_forms(campaign_id: str, db: Session = Depends(get_db), user: User = Dep
 @app.post("/api/campaigns/{campaign_id}/forms", status_code=201)
 def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db), user: User = Depends(write_user)):
     campaign = owned_campaign(campaign_id, db, user)
+    # brand_source absent : les anciens appels passent encore par use_brand.
+    source = data.brand_source or ("company" if data.use_brand else "none")
     try:
-        identity = luna_identity(user.company)
-        if not data.use_brand:
-            identity = {**identity, "brand": {}}
+        identity = creation_identity(source, data.website_url, user.company)
+    except SiteError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Ce site n'a pas répondu.") from exc
+    try:
         # Les anciennes colonnes restent disponibles pendant la migration, mais
         # une seule génération IA écrit désormais le document visible.
         generated = generate_campaign(
@@ -631,7 +742,7 @@ def create_form(campaign_id: str, data: FormCreate, db: Session = Depends(get_db
     if data.description.strip():
         generated["description"] = data.description.strip()
     generated["slug"] = unique_slug(db, generated["name"])
-    form = Form(campaign_id=campaign.id, creator_id=user.id,
+    form = Form(campaign_id=campaign.id, creator_id=user.id, identity=identity,
                 brief={"prompt": data.prompt, "context": data.context, "website_url": data.website_url}, **generated)
     db.add(form)
     create_form_pages(db, form, initial_html)
@@ -870,12 +981,27 @@ def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revisio
     db.refresh(page)
     if (page.draft_html or page.html) != expected_html:
         raise ValueError("La page a changé pendant la génération. Rechargez l'éditeur avant de réessayer.")
+
+    # Luna a repondu sans modifier la page : rien a enregistrer, et surtout pas
+    # une version qui laisserait croire a un changement.
+    if not revision["html"].strip():
+        return {"message": revision["message"], "form": form_json(db, form),
+                "version": None, "touched": [], "changed": False}
     try:
         candidate = merge_page_region(expected_html, revision["html"], revision.get("region"))
         cleaned_html, manifest = prepare_page(candidate, require_form=page.role == "form")
     except ValueError:
         db.rollback()
         raise
+
+    # Reponse qui n'a rien change : la reserialisation du CSS suffit a rendre
+    # les chaines differentes, alors on compare au bruit pres. Sans cela, Luna
+    # annonce un changement, une version s'empile, et l'utilisateur voit une
+    # page identique avec un bouton « annuler cette modification ».
+    if same_document(cleaned_html, expected_html):
+        db.rollback()
+        return {"message": "Je n'ai rien changé à la page : reformulez en précisant ce qui doit bouger.",
+                "form": form_json(db, form), "version": None, "touched": [], "changed": False}
 
     if not any((version.snapshot or {}).get("page_id") == page.id for version in form.versions):
         record_version(db, form, {**published_state(form), "html": form_page(form).html,
@@ -900,6 +1026,7 @@ def save_page_revision(db: Session, form: Form, data: LunaRefineRequest, revisio
         "form": form_json(db, form),
         "version": version_json(version),
         "touched": [revision["region"]] if revision.get("region") else [],
+        "changed": True,
     }
 
 
@@ -910,7 +1037,7 @@ def refine_with_luna(form_id: str, data: LunaRefineRequest, db: Session = Depend
     form = owned_form(form_id, db, user)
     current_html, context = page_revision_context(db, form, data)
     try:
-        revision = revise_page(current_html, data.instruction, luna_identity(user.company), **context)
+        revision = revise_page(current_html, data.instruction, page_identity(form), **context)
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
     try:
@@ -938,7 +1065,7 @@ def refine_with_luna_stream(form_id: str, data: LunaRefineRequest, db: Session =
                 return
             current_html, context = page_revision_context(stream_db, form, data)
             try:
-                for event in stream_page_revision(current_html, data.instruction, luna_identity(form.campaign.company), **context):
+                for event in stream_page_revision(current_html, data.instruction, page_identity(form), **context):
                     if event["type"] == "final":
                         result = save_page_revision(stream_db, form, data, event, current_html)
                         yield send({"type": "final", **result})
@@ -1083,7 +1210,7 @@ def restore_version(form_id: str, version_id: str, db: Session = Depends(get_db)
 def duplicate_form(form_id: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     source = owned_form(form_id, db, user)
     name = f"{source.name} - copie"
-    copy = Form(campaign_id=source.campaign_id, creator_id=user.id, name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=thank_you_settings(source), visibility="private")
+    copy = Form(campaign_id=source.campaign_id, creator_id=user.id, identity=page_identity(source), name=name, slug=unique_slug(db, name), description=source.description, kind=source.kind, fields=source.fields, design=source.design or default_design(), content=source.content or default_content(source.kind), thank_you=thank_you_settings(source), visibility="private")
     db.add(copy)
     copy_form_pages(db, source, copy)
     db.commit()

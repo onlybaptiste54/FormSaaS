@@ -382,3 +382,111 @@ def test_stream_page_revision_resets_invalid_fragment_and_omits_images_on_retry(
     assert {"type": "reset"} in updates
     assert updates[-1]["type"] == "final"
     assert all(block["type"] != "input_image" for message in calls[1]["input"] for block in message["content"])
+
+
+def test_page_revision_retries_once_when_the_page_describes_itself():
+    """La première page se raconte : on la refuse en citant la phrase fautive."""
+    bavarde = PAGE.replace("<h1>Contact</h1>", "<h1>Contact</h1><p>Un formulaire opt-in pour capter des prospects.</p>")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return _page_response("Page créée.", bavarde)
+        return _page_response("Page créée.", PAGE)
+
+    result = revise_page(
+        "", "Crée une page de contact", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Nouvelle page"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requests) == 2
+    reprise = json.dumps(requests[1], ensure_ascii=False)
+    assert "opt-in" in reprise and "s'adresser aux visiteurs" in reprise
+    assert result["html"] == PAGE
+
+
+def test_page_revision_keeps_a_second_attempt_that_still_describes_itself():
+    """Mieux vaut une page imparfaite qu'un refus sec : la reprise n'est pas rejouée."""
+    bavarde = PAGE.replace("<h1>Contact</h1>", "<h1>Contact</h1><p>Un formulaire opt-in pour capter des prospects.</p>")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return _page_response("Page créée.", bavarde)
+
+    result = revise_page(
+        "", "Crée une page de contact", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Nouvelle page"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requests) == 2
+    assert result["html"] == bavarde
+
+
+def test_a_region_is_accepted_without_a_selection():
+    """Repondre par region sans selection evite de reecrire tout le document."""
+    fragment = '<section data-sillage-region="hero"><h1>Court</h1></section>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _page_response("Titre raccourci.", fragment, "hero")
+
+    result = revise_page(
+        PAGE, "Raccourcis le titre", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Page complète"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert result["region"] == "hero"
+
+
+def test_a_region_other_than_the_selected_one_is_still_refused():
+    appels = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        appels.append(1)
+        return _page_response("Change.", '<section data-sillage-region="pied">x</section>', "pied")
+
+    with pytest.raises(LunaAPIError):
+        revise_page(
+            PAGE, "Change le titre", {"name": "Atelier Test"},
+            selection={"region": "hero", "view": "form", "element_ids": []},
+            api_key="test-key", transport=httpx.MockTransport(handler),
+        )
+    assert len(appels) == 2
+
+
+def test_looks_like_question_describes_the_form_not_the_intent():
+    """L'indice decrit la formulation ; c'est le modele qui juge l'intention.
+
+    « Tu peux mettre le bouton en bleu ? » est donc bien repere comme
+    interrogatif, et reste une consigne a appliquer.
+    """
+    from app.luna import looks_like_question
+
+    for demande in ["Ça vient d’où les infos là ?", "Pourquoi il y a du vide en dessous",
+                    "Tu fais n’importe quoi", "Comment tu as choisi les couleurs",
+                    "Non, tu ne l’as pas fait", "Tu peux mettre le bouton en bleu ?"]:
+        assert looks_like_question(demande), demande
+
+    for ordre in ["Mets le bouton d’envoi en vert sapin", "supprime ça",
+                  "Raccourcis le titre principal", "Ajoute une section tarifs", ""]:
+        assert not looks_like_question(ordre), ordre
+
+
+def test_a_second_style_block_is_sent_back_for_correction():
+    """Un <style> ajoute redeclare tout :root et gonfle la page a chaque retouche."""
+    double = PAGE.replace("</head>", "<style>.x{color:red}</style></head>")
+    requetes = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requetes.append(json.loads(request.content))
+        return _page_response("Fait.", double if len(requetes) == 1 else PAGE)
+
+    result = revise_page(
+        PAGE, "Mets plus de couleur", {"name": "Atelier Test"},
+        selection={"view": "form", "element_ids": [], "label": "Page complète"},
+        api_key="test-key", transport=httpx.MockTransport(handler),
+    )
+    assert len(requetes) == 2
+    assert "un seul bloc <style>" in json.dumps(requetes[1], ensure_ascii=False)
+    assert result["html"] == PAGE

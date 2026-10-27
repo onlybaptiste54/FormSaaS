@@ -1,6 +1,6 @@
 import pytest
 
-from app.page_document import MAX_PAGE_HTML, legacy_to_html, prepare_page, render_page
+from app.page_document import same_document, MAX_PAGE_HTML, legacy_to_html, foreign_images, markdown_leftovers, meta_discourse, prepare_page, render_page, strip_tracking
 
 
 def _form(inner: str) -> str:
@@ -120,7 +120,8 @@ def test_render_adds_csp_to_form_and_thanks_documents():
         assert '<head><meta http-equiv="Content-Security-Policy"' in rendered
         assert "script-src 'none'" in rendered
         assert "style-src 'unsafe-inline'" in rendered
-        assert "img-src https: data:" in rendered
+        # 'self' couvre le relais des visuels du client, a la meme origine.
+        assert "img-src 'self' https: data:" in rendered
         assert "object-src 'none'" in rendered
         assert "base-uri 'none'" in rendered
         assert "form-action 'none'" in rendered
@@ -167,3 +168,129 @@ def test_legacy_conversion_preserves_fields_and_older_style_tokens():
         require_form=False,
     )
     assert "Merci {prenom} !" in personalized
+
+
+def test_meta_discourse_reports_page_talking_about_itself():
+    """Les deux formes observées en production : brief reformulé, choix justifiés."""
+    page = (
+        '<!doctype html><html lang="fr"><body>'
+        '<p>Un formulaire opt-in clair, élégant et rassurant pour capter des prospects.</p>'
+        '<aside>Le message met l’accent sur la transparence tarifaire, '
+        'des éléments mis en avant publiquement par Smartduck.</aside>'
+        + _form('<input name="email" type="email">')
+        + '</body></html>'
+    )
+    fautifs = meta_discourse(page)
+    assert len(fautifs) == 2
+    assert any("opt-in" in phrase for phrase in fautifs)
+    assert any("met l’accent" in phrase for phrase in fautifs)
+
+
+def test_meta_discourse_accepts_a_page_written_for_visitors():
+    """Aucun faux positif sur une vraie page, lien source et mentions compris."""
+    page = (
+        '<!doctype html><html lang="fr"><head>'
+        '<title>Formulaire opt-in interne</title>'
+        '<style>.cta{color:red}/* landing page */</style>'
+        '</head><body>'
+        '<h1>Retrouvez une peau nette durablement</h1>'
+        '<p>Décrivez votre demande, nous revenons vers vous sous 24 heures.</p>'
+        '<p>Nos tarifs sont publics : <a href="https://exemple.fr/tarifs">voir les tarifs</a>.</p>'
+        + _form('<input name="email" type="email">')
+        + '</body></html>'
+    )
+    assert meta_discourse(page) == []
+
+
+def test_meta_discourse_ignores_style_and_handles_typographic_apostrophe():
+    assert meta_discourse('<style>/* taux de conversion */</style><p>Bonjour</p>') == []
+    droite = meta_discourse("<p>Le contenu s'appuie sur leur site.</p>")
+    courbe = meta_discourse("<p>Le contenu s’appuie sur leur site.</p>")
+    assert len(droite) == 1 and len(courbe) == 1
+
+
+def test_markdown_leftovers_catches_what_the_visitor_should_never_read():
+    """Le cas observe : un lien Markdown rendu en clair, utm compris."""
+    page = ('<p>On vous aide. ([smartduck.fr](https://smartduck.fr/offre/?utm_source=openai))</p>'
+            '<p>Voir https://smartduck.fr/nos-centres/</p><p>Un mot **important**.</p>')
+    fautifs = markdown_leftovers(page)
+    assert any(f.startswith("[smartduck.fr](") for f in fautifs)
+    assert any(f == "**important**" for f in fautifs)
+    assert any("nos-centres" in f for f in fautifs)
+
+
+def test_markdown_leftovers_accepts_a_real_link():
+    assert markdown_leftovers('<p>Voir le <a href="https://smartduck.fr/">site de smartduck</a>.</p>') == []
+    assert markdown_leftovers('<style>a{color:red}</style><p>Bonjour</p>') == []
+
+
+def test_strip_tracking_keeps_the_useful_parameters():
+    assert strip_tracking("https://x.fr/a?utm_source=openai&id=7&fbclid=zz") == "https://x.fr/a?id=7"
+    assert strip_tracking("https://x.fr/b") == "https://x.fr/b"
+    assert strip_tracking("https://x.fr/c?page=2") == "https://x.fr/c?page=2"
+
+
+def test_prepare_page_removes_tracking_from_stored_links():
+    """Un utm_source=openai annoncerait aux prospects d'ou vient le texte."""
+    source = _form('<a href="https://smartduck.fr/offre/?utm_source=openai&amp;id=3">Nos offres</a>'
+                   '<input name="email" type="email">')
+    document, _ = prepare_page(source, require_form=True)
+    assert "utm_source" not in document
+    assert "id=3" in document
+
+
+def test_foreign_images_only_accepts_what_was_provided():
+    autorisees = {"https://smartduck.fr/media/equipe.jpg"}
+    page = ('<img src="https://smartduck.fr/media/equipe.jpg" alt="ok">'
+            '<img src="https://ailleurs.test/vole.jpg" alt="non">'
+            '<img src="data:image/gif;base64,R0lGOD" alt="ok">'
+            '<style>.h{background:url(https://ailleurs.test/fond.jpg)}</style>')
+    assert foreign_images(page, autorisees) == ["https://ailleurs.test/vole.jpg",
+                                                "https://ailleurs.test/fond.jpg"]
+    assert foreign_images('<img src="https://smartduck.fr/media/equipe.jpg">', autorisees) == []
+
+
+def test_only_the_proxy_path_passes_as_a_relative_image():
+    """Le relais est accepte, les autres chemins relatifs non."""
+    def image(src: str) -> str:
+        document, _ = prepare_page(_form(f'<img src="{src}" alt="x"><input name="email" type="email">'),
+                                   require_form=True)
+        return document
+
+    assert '/media/brand?u=https%3A%2F%2Fx.fr%2Fa.png&amp;s=abc' in image("/media/brand?u=https%3A%2F%2Fx.fr%2Fa.png&amp;s=abc")
+    assert "evil.test" not in image("//evil.test/x.png")
+    assert "passwd" not in image("/etc/passwd")
+
+
+def test_foreign_images_ignores_html_escaping_of_the_url():
+    """Regression : &amp; dans le document contre & dans la liste des visuels.
+
+    Sans cela, chaque image deja presente etait declaree intruse a la retouche
+    suivante, et Luna supprimait les photos du client pour obeir.
+    """
+    autorisee = "/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&s=29b4b1e7"
+    page = f'<img src="/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&amp;s=29b4b1e7" alt="x">'
+    assert foreign_images(page, {autorisee}) == []
+    # Une signature differente reste refusee.
+    autre = '<img src="/media/brand?u=https%3A%2F%2Fsmartduck.fr%2Fa.png&amp;s=0000" alt="x">'
+    assert len(foreign_images(autre, {autorisee})) == 1
+
+
+def test_same_document_ignores_serialisation_noise():
+    """Regression : une espace de plus dans @media suffisait a simuler un changement."""
+    avant = '<style>@media   (max-width:900px){h1{color:red}}</style><p>Bonjour</p>'
+    apres = '<style>@media    (max-width:900px){h1{color:red}}</style>  <p>Bonjour</p>'
+    assert same_document(avant, apres)
+    assert not same_document(avant, avant.replace("red", "blue"))
+
+
+def test_prepare_page_merges_several_style_blocks():
+    """Luna ajoute parfois une feuille au lieu de modifier l'existante."""
+    source = ('<style>:root{--a:#111}h1{color:var(--a)}</style>'
+              + _form('<input name="email" type="email">')
+              + '<style>.panel{background:#eee}</style>')
+    document, _ = prepare_page(source, require_form=True)
+    assert document.lower().count("<style") == 1
+    # L'ordre des regles est conserve, donc la cascade ne bouge pas.
+    style = document[document.find("<style"):document.find("</style>")]
+    assert style.index("--a:#111") < style.index(".panel")

@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 
@@ -716,3 +717,149 @@ def test_html_draft_warns_about_old_answers_and_preserves_them(client):
     assert inbox["total"] == 2
     assert any(row["answers"] == answers for row in inbox["items"])
     client.post(f"/api/forms/{form['id']}/draft/discard")
+
+
+DOCUMENT_LIBRE = (
+    '<!doctype html><html><head><style>body{background:#123}</style></head><body>'
+    '<main data-sillage-region="hero"><h1>Une page</h1></main>'
+    '<form data-sillage="form"><label>Email<input name="email" type="email" required></label>'
+    '<div data-sillage="consent"></div><button>Envoyer</button></form></body></html>'
+)
+
+
+def test_a_page_keeps_the_identity_it_was_born_with(client, monkeypatch):
+    """Changer les couleurs du compte ne doit plus deriver les pages existantes."""
+    from app import main
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    vues = []
+
+    def generate_page(*args, **kwargs):
+        vues.append(args[1])
+        return {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}
+
+    monkeypatch.setattr(main, "generate_page", generate_page)
+    campaign = client.post("/api/campaigns", json={"name": "Identité figée"}).json()
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "Une page de contact"}).json()
+    couleur_origine = vues[0]["primary_color"]
+
+    client.patch("/api/company", json={"primary_color": "#123456", "name": "Autre Maison"})
+    try:
+        def fake_revision(html, instruction, identity, **kwargs):
+            vues.append(identity)
+            return {"message": "Fait.", "html": html, "region": None}
+
+        monkeypatch.setattr(main, "revise_page", fake_revision)
+        client.post(f"/api/forms/{form['id']}/luna/refine", json={"instruction": "Change le titre"})
+    finally:
+        client.patch("/api/company", json={"primary_color": couleur_origine, "name": vues[0]["name"]})
+
+    assert vues[1]["primary_color"] == couleur_origine
+    assert vues[1]["name"] == vues[0]["name"]
+
+
+def test_creating_without_the_brand_applies_no_identity_at_all(client, monkeypatch):
+    """Decocher la marque retirait le profil mais gardait nom, ton et couleurs."""
+    from app import main
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    vues = []
+
+    def generate_page(*args, **kwargs):
+        vues.append(args[1])
+        return {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}
+
+    monkeypatch.setattr(main, "generate_page", generate_page)
+    campaign = client.post("/api/campaigns", json={"name": "Sans marque"}).json()
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms",
+                       json={"prompt": "Une page neutre", "use_brand": False}).json()
+    assert vues[0] == {}
+
+    def fake_revision(html, instruction, identity, **kwargs):
+        vues.append(identity)
+        return {"message": "Fait.", "html": html, "region": None}
+
+    monkeypatch.setattr(main, "revise_page", fake_revision)
+    client.post(f"/api/forms/{form['id']}/luna/refine", json={"instruction": "Change le titre"})
+    assert vues[1] == {}, "un choix explicite de ne pas appliquer d'identite doit le rester"
+
+
+def test_creating_with_a_client_site_applies_that_brand_not_yours(client, monkeypatch):
+    """Une page faite pour un tiers ne doit rien porter de la marque du compte."""
+    from app import main
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    profil = {"palette": ["#5b2d8b", "#ffffff"], "font": "sans", "tone": "sobre et rassurant",
+              "rules_do": ["beaucoup de blanc"], "rules_avoid": ["les dégradés"],
+              "summary": "Une identité violette et médicale."}
+    vues = []
+
+    monkeypatch.setattr(main, "read_site", lambda url: {"url": url, "title": "smartduck : épilation laser",
+                                                        "colors": [{"value": "#5b2d8b", "count": 9, "roles": ["fond"]}],
+                                                        "fonts": [], "headings": [], "description": "",
+                                                        "stylesheets_read": 2})
+    monkeypatch.setattr(main, "analyze_site_brand", lambda facts, identity, **kwargs: profil)
+    monkeypatch.setattr(main, "generate_page", lambda *args, **kwargs: (vues.append(args[1]) or
+                                                                       {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}))
+
+    campaign = client.post("/api/campaigns", json={"name": "Pour un client"}).json()
+    created = client.post(f"/api/campaigns/{campaign['id']}/forms", json={
+        "prompt": "Une page de contact pour ce client",
+        "brand_source": "site", "website_url": "https://smartduck.fr/"})
+    assert created.status_code == 201, created.text
+
+    identite = vues[0]
+    assert identite["name"] == "smartduck"
+    assert identite["brand"]["palette"] == ["#5b2d8b", "#ffffff"]
+    assert "Atelier Rivage" not in json.dumps(identite, ensure_ascii=False)
+
+    # Et elle survit a la retouche suivante, comme toute identite de page.
+    def fake_revision(html, instruction, identity, **kwargs):
+        vues.append(identity)
+        return {"message": "Fait.", "html": html, "region": None}
+
+    monkeypatch.setattr(main, "revise_page", fake_revision)
+    client.post(f"/api/forms/{created.json()['id']}/luna/refine", json={"instruction": "Change le titre"})
+    assert vues[1]["name"] == "smartduck"
+
+
+def test_creating_with_a_client_site_requires_its_address(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    campaign = client.post("/api/campaigns", json={"name": "Sans adresse"}).json()
+    refus = client.post(f"/api/campaigns/{campaign['id']}/forms", json={
+        "prompt": "Une page de contact pour ce client", "brand_source": "site"})
+    assert refus.status_code == 422
+    assert "adresse" in refus.json()["detail"].lower()
+
+
+def test_a_question_gets_an_answer_and_leaves_the_page_untouched(client, monkeypatch):
+    """Une question n'est pas un ordre de refonte : la page ne doit pas bouger."""
+    from app import main
+    from app.config import settings
+
+    form = active_form(client)
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    avant = client.get(f"/api/forms/{form['id']}").json()
+    versions_avant = len(client.get(f"/api/forms/{form['id']}/versions").json())
+
+    def fake_revision(html, instruction, identity, **kwargs):
+        return {"message": "Le vide vient de la marge du bloc. Vous voulez que je la réduise ?",
+                "html": "", "region": None}
+
+    monkeypatch.setattr(main, "revise_page", fake_revision)
+    reponse = client.post(f"/api/forms/{form['id']}/luna/refine",
+                          json={"instruction": "Pourquoi il y a du vide en dessous du formulaire ?"})
+    assert reponse.status_code == 200, reponse.text
+    resultat = reponse.json()
+
+    assert resultat["changed"] is False
+    assert resultat["version"] is None
+    assert "marge" in resultat["message"]
+    apres = client.get(f"/api/forms/{form['id']}").json()
+    assert apres["html"] == avant["html"] and apres.get("draft_html") == avant.get("draft_html")
+    assert len(client.get(f"/api/forms/{form['id']}/versions").json()) == versions_avant

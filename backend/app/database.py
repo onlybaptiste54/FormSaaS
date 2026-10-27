@@ -78,6 +78,7 @@ def upgrade(connection):
     add_column(connection, "responses", "form_id", "VARCHAR(36)")
     add_column(connection, "form_versions", "screenshot_data_url", "TEXT")
     add_column(connection, "form_versions", "images", "JSON")
+    add_column(connection, "forms", "identity", "JSON")
 
     if legacy:
         split_campaigns_into_forms(connection)
@@ -104,6 +105,33 @@ def upgrade(connection):
         "UPDATE forms SET thank_you = '{}' WHERE id IN "
         "(SELECT form_id FROM pages WHERE role = 'thanks' AND form_id IS NOT NULL)"
     ))
+    freeze_form_identity(connection)
+
+
+def freeze_form_identity(connection):
+    """Fige sur chaque formulaire l'identite de marque qu'il applique deja.
+
+    L'identite etait relue sur le compte a chaque retouche : changer ses
+    couleurs faisait silencieusement deriver toutes les pages existantes a leur
+    modification suivante. Chaque formulaire garde desormais la sienne. La
+    reprise copie l'etat courant, donc rien ne bouge a l'oeil.
+    """
+    rows = connection.execute(text(
+        "SELECT forms.id, companies.name, companies.sector, companies.tone, "
+        "companies.primary_color, companies.accent_color, companies.brand "
+        "FROM forms JOIN campaigns ON campaigns.id = forms.campaign_id "
+        "JOIN companies ON companies.id = campaigns.company_id "
+        "WHERE forms.identity IS NULL"
+    )).all()
+    for form_id, name, sector, tone, primary, accent, brand in rows:
+        if isinstance(brand, str):
+            brand = json.loads(brand or "{}")
+        identity = {"name": name, "sector": sector, "tone": tone,
+                    "primary_color": primary, "accent_color": accent, "brand": brand or {}}
+        connection.execute(
+            text("UPDATE forms SET identity = :identity WHERE id = :id"),
+            {"identity": json.dumps({key: value for key, value in identity.items() if value}, ensure_ascii=False), "id": form_id},
+        )
 
 
 def upgrade_pages_for_tunnels(connection):

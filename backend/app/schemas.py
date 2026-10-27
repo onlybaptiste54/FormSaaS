@@ -100,6 +100,9 @@ class FormCreate(BaseModel):
     website_url: str = Field(default="", max_length=300)
     images: list[str] = Field(default_factory=list, max_length=2)
     use_brand: bool = True
+    # D'ou vient l'identite de la page : la marque du compte, le site d'un
+    # client, ou aucune. Absent, use_brand tranche, pour les anciens appels.
+    brand_source: Literal["company", "site", "none"] | None = None
 
     @field_validator("website_url")
     @classmethod
@@ -252,6 +255,12 @@ class BrandAnalyzeRequest(BaseModel):
 
     images: list[str] = Field(min_length=1, max_length=4)
     notes: str = Field(default="", max_length=400)
+
+
+class SiteBrandRequest(BaseModel):
+    """Adresse publique dont on veut deduire la charte graphique."""
+
+    url: str = Field(min_length=4, max_length=300)
 
 
 class CompanyUpdate(BaseModel):

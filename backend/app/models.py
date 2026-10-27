@@ -125,6 +125,10 @@ class Form(Base):
     draft: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Brief d'origine : Luna s'en souvient lors des retouches.
     brief: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Identite appliquee a cette page, figee a la creation. NULL signale un
+    # formulaire anterieur, qui retombe sur celle du compte ; {} signale un
+    # choix explicite de ne pas appliquer d'identite.
+    identity: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     visits: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

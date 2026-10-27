@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
-from .page_document import MAX_PAGE_HTML
+from .page_document import MAX_PAGE_HTML, foreign_images, markdown_leftovers, meta_discourse
 
 
 logger = logging.getLogger(__name__)
@@ -29,11 +29,15 @@ class LunaPage(BaseModel):
 
     message: str = Field(min_length=1, max_length=400)
     region: str | None = Field(pattern=r"^(?:style|[a-zA-Z][\w-]{0,63})$")
-    html: str = Field(min_length=1, max_length=MAX_PAGE_HTML)
+    # html vide : Luna repond sans toucher a la page. Sans cette porte de
+    # sortie, toute question et tout reproche devenaient un ordre de refonte,
+    # puisque le schema exigeait un document a chaque tour.
+    html: str = Field(max_length=MAX_PAGE_HTML)
 
 
 LUNA_PAGE_INSTRUCTIONS = """Tu es Luna, directrice artistique et experte UX de Sillage.
 Tu écris directement le HTML et le CSS responsive d'une page française, à partir du brief, de l'identité, de la page actuelle et de la demande. Tu disposes de la recherche web.
+Avant tout, tranche sur l'intention, jamais sur la ponctuation. Un message qui demande une explication, qui reproche ou qui constate sans dire quoi changer : reponds dans message, renvoie html vide et region null, la page reste intacte. Reponds alors vraiment a ce qui est demande (d'ou vient une information, pourquoi tu as fait tel choix) et n'en profite pas pour corriger autre chose au passage. Un message qui demande un changement est une consigne a appliquer, meme s'il est poli et se termine par un point d'interrogation : « tu peux mettre le bouton en bleu ? » se fait, sans discuter et sans le faire remarquer. Le champ formulation_interrogative signale seulement la forme du message, pas son intention. Quand tu modifies, ne touche qu'a ce qui est vise et laisse le reste mot pour mot.
 Réponds exclusivement avec le JSON du schéma : message (une phrase en français), html (la page entière ou un fragment) et region (nom de région ou null).
 
 La page est un document HTML complet avec <!doctype html>, <html lang="fr">, <head>, un seul <style> et <body>. Écris une direction artistique affirmée et une composition propre à cette demande, adaptée à la marque, au mobile et au bureau. Une page de collecte n'est pas forcément une carte blanche avec les champs empilés : choisis une composition éditoriale adaptée, avec un vrai titre, une proposition claire et un formulaire bien intégré. Limite le formulaire à cinq champs métier, en plus du consentement injecté par le serveur. Évite les titres interchangeables, le texte de remplissage et les éléments de confiance inventés. Ne reproduis pas le même squelette visuel d'une demande à l'autre. Pas de JavaScript, de balise script, iframe, object, embed, d'attribut on*, de CSS @import ou d'URL externe dans le CSS. Les images peuvent utiliser uniquement des URL https ou data:image fournies. Les ressources non fournies ne doivent pas être inventées.
@@ -41,6 +45,10 @@ Pour toute nouvelle page, commence par une recherche web ciblée sur le site fou
 Sur une page de collecte, conserve exactement un <form data-sillage="form"> qui contient un à cinq champs métier, un bouton d'envoi actif et un unique <div data-sillage="consent"></div>. Le serveur injecte le texte légal : ne crée ni case de consentement ni texte juridique toi-même. Les noms de champs sont des attributs name valides et uniques ; conserve les name existants sauf demande explicite, car des réponses historiques y sont rattachées. Le serveur branche l'envoi ; n'ajoute aucune action externe.
 Sur une page non collectrice avec une étape suivante, place un bouton <button type="button" data-sillage-next="">Continuer</button>. Le parcours est branché par le serveur ; n'utilise pas de lien externe pour passer à l'étape suivante.
 Balise les sections utiles avec data-sillage-region="nom" (nom stable et unique). Pour une retouche circonscrite à une zone sélectionnée, tu peux renvoyer seulement son élément racine complet, avec region égal à son data-sillage-region. Si seule une règle de style locale change, renvoie uniquement le bloc <style> complet avec region="style". Si la demande touche toute la page, ou si la sélection n'est pas clairement locale, renvoie le document complet et region=null. Ne renvoie jamais un fragment dépourvu de son élément racine.
+identity.couleurs donne l'emploi de chaque teinte relevee sur le site : accent pour ce qui souligne et appelle a l'action, fond pour la base, fond_doux pour poser un aplat qui casse le blanc, encre pour le texte, secondaire pour le texte attenue. Quand on te dit qu'une page est trop blanche ou manque de couleur, sers-toi de fond_doux sur des surfaces et de l'accent sur les reperes, sans inventer de teinte absente de cette liste. Si le role dont tu aurais besoin vaut null, dis-le dans message plutot que de renvoyer la page inchangee en annoncant un changement.
+identity.images liste les visuels du site de la marque, avec leur texte alternatif : tu peux les placer dans la page par <img src="..." alt="...">, en reprenant l'URL exactement. Sers-t'en pour donner du corps a la page, un visuel d'accroche par exemple. N'utilise aucune autre image : toute URL qui ne vient pas de cette liste est refusee.
+Tu ecris du HTML, jamais du Markdown : pas de [texte](url), pas de **gras**, pas de # titre. Une source se cite par un <a href="..."> dont le texte est lisible, par exemple le nom du site, et jamais par une URL ecrite en clair dans le texte. N'ajoute aucun parametre de suivi aux liens.
+La page s'adresse aux visiteurs, jamais au client de Sillage qui la commande. N'y écris donc rien sur la page elle-même ni sur ton travail : pas de reformulation du brief, pas de vocabulaire de métier (opt-in, landing page, tunnel de conversion, call-to-action, taux de conversion), pas d'encart qui explique tes choix, tes sources ou d'où vient l'information. Un fait repris du web se cite par un lien source sobre, pas par un paragraphe de justification. Tout ce que tu as à dire sur ce que tu as fait va dans message, qui n'est pas affiché aux visiteurs.
 La page sera assainie et validée par le serveur avant stockage. N'extrais aucune donnée personnelle des images.
 """
 
@@ -338,6 +346,74 @@ def analyze_brand(
     return profile.model_dump()
 
 
+LUNA_SITE_BRAND_INSTRUCTIONS = """Tu es Luna, directrice artistique. On te donne les faits extraits d'un site public : les couleurs réellement déclarées dans son CSS avec leur rôle et leur fréquence, les polices déclarées, le titre, la description et les intertitres.
+
+Déduis-en un profil de marque exploitable pour une page de collecte :
+- palette : 2 à 6 couleurs prises uniquement dans la liste fournie, de la plus structurante à la plus secondaire. N'invente aucune couleur : toute couleur absente de la liste fait refuser ta réponse.
+- font : la police de la liste fermée qui s'approche le plus des polices déclarées.
+- tone : deux ou trois mots en français, par exemple « sobre et direct ».
+- rules_do et rules_avoid : consignes courtes et concrètes, tirées de ce que tu lis.
+- summary : une phrase qui résume l'identité.
+
+Le champ accent donne la teinte qui signe la marque, calculee a partir du site : place-la dans la palette et traite-la comme la couleur d'accent, meme si elle est moins frequente que les neutres. Une couleur frequente n'est pas forcement la couleur de marque : le blanc, le noir et les gris servent surtout de fond et de texte. Garde quand même un fond et une couleur de texte dans la palette, la page en a besoin. N'affirme rien sur l'activité de l'entreprise que les faits ne montrent pas.
+"""
+
+
+def analyze_site_brand(
+    facts: dict,
+    identity: str | dict,
+    *,
+    api_key: str,
+    model: str = "gpt-5.4-mini",
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """Propose un profil de marque à partir des faits extraits d'un site.
+
+    La palette est verrouillée sur les couleurs réellement lues : c'est la
+    seule garantie que le profil décrit le site et non une idée du site.
+    """
+    if not api_key:
+        raise LunaAPIError("Luna n'est pas connectée : renseignez la clé du service d'IA.")
+    relevees = {str(couleur.get("value", "")).lower() for couleur in facts.get("colors") or []}
+    if len(relevees) < 2:
+        raise LunaAPIError("Ce site ne déclare pas assez de couleurs pour en déduire une charte.")
+
+    safe_identity = _safe_identity(identity)
+    correction = ""
+    for attempt in (1, 2):
+        contenu = {"site": facts, "identity": safe_identity}
+        if correction:
+            contenu["correction_demandee"] = correction
+        request_payload = {
+            "model": model,
+            "instructions": LUNA_SITE_BRAND_INSTRUCTIONS,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": json.dumps(contenu, ensure_ascii=False)}]}],
+            "text": {"format": {"type": "json_schema", "name": "sillage_brand_profile", "strict": True, "schema": BrandProfile.model_json_schema()}},
+            "max_output_tokens": 600,
+            "store": False,
+            "safety_identifier": hashlib.sha256(str(facts.get("url") or "sillage-site").encode()).hexdigest()[:32],
+        }
+        try:
+            profile = BrandProfile.model_validate_json(_output_text(_request_openai(
+                request_payload, api_key=api_key, timeout_seconds=timeout_seconds, transport=transport,
+            )))
+            inventees = [couleur for couleur in profile.palette if couleur.lower() not in relevees]
+            if inventees:
+                raise ValueError(
+                    "Ces couleurs ne figurent pas dans le site : " + ", ".join(inventees)
+                    + ". Choisis uniquement dans la liste fournie."
+                )
+        except (ValidationError, ValueError) as exc:
+            correction = str(exc)
+            logger.warning("Luna site brand refused (attempt %s): %s", attempt, correction[:200])
+            if attempt == 2:
+                raise LunaAPIError("Luna n'a pas réussi à déduire une charte de ce site.") from exc
+            continue
+        return profile.model_dump()
+    raise LunaAPIError("Luna n'a pas réussi à déduire une charte de ce site.")
+
+
 def _company_name(identity: str | dict) -> str:
     if isinstance(identity, str):
         return identity
@@ -347,7 +423,7 @@ def _company_name(identity: str | dict) -> str:
 def _safe_identity(identity: str | dict) -> dict:
     if isinstance(identity, str):
         return {"name": identity}
-    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand")
+    allowed = ("name", "sector", "tone", "primary_color", "accent_color", "brand", "images", "couleurs")
     return {key: identity[key] for key in allowed if identity.get(key)}
 
 
@@ -545,6 +621,10 @@ def merge_page_region(current_html: str, fragment: str, region: str | None) -> s
 
 def _validate_page_result(result: LunaPage) -> None:
     html = result.html.strip()
+    if not html:
+        if result.region is not None:
+            raise ValueError("Une reponse sans modification ne porte pas de region.")
+        return
     if result.region is None:
         if not re.match(r"(?is)^<!doctype\s+html>\s*<html\b", html) or not re.search(r"(?is)</html>\s*$", html):
             raise ValueError("La réponse doit contenir une page HTML complète.")
@@ -558,6 +638,37 @@ def _validate_page_result(result: LunaPage) -> None:
         return
     if shape.invalid or shape.stack or shape.root_count != 1 or shape.root_region != result.region or shape.root_tag in (_VOID_HTML | {"style"}):
         raise ValueError("Le fragment doit ouvrir et fermer sur sa région data-sillage-region.")
+
+
+_INTERROGATIFS = (
+    "pourquoi", "comment", "c'est quoi", "qu'est-ce", "quoi", "qui", "quand", "ou est",
+    "d'ou", "ca vient d'ou", "combien", "est-ce que", "explique", "tu peux me dire",
+    "dis-moi", "a quoi", "c'est qui", "c'est ou",
+)
+
+_REPROCHES = (
+    # « importe quoi » couvre les apostrophes droites, courbes et absentes.
+    "importe quoi", "tu ne l'as pas fait", "tu n'as pas", "c'est nul",
+    "c'est moche", "c'est debile", "ca va pas", "ca ne va pas", "degueu", "c'est rate",
+)
+
+
+def looks_like_question(instruction: str) -> bool:
+    """Le message demande-t-il une explication plutot qu'une modification ?
+
+    Sert d'indice au modele, pas de verdict : une question peut porter une
+    vraie demande (tu peux mettre le bouton en bleu ?), et c'est lui qui
+    tranche. Mais sans cet indice, « ca vient d'ou les infos ? » finissait en
+    retouche de la page.
+    """
+    texte = unicodedata.normalize("NFKD", (instruction or "").strip().lower())
+    texte = "".join(c for c in texte if not unicodedata.combining(c))
+    texte = texte.replace("’", "'")
+    if not texte:
+        return False
+    return (texte.endswith("?")
+            or any(texte.startswith(mot) for mot in _INTERROGATIFS)
+            or any(mot in texte for mot in _REPROCHES))
 
 
 def _page_request(
@@ -609,6 +720,10 @@ def _page_request(
     current = {
         "current_html": html,
         "instruction": instruction,
+        # Signale la forme du message, pas son intention : nommer ce champ
+        # « est une question » le transformait en ordre de ne rien faire, et une
+        # demande polie finissait refusee au motif qu'elle portait un « ? ».
+        "formulation_interrogative": looks_like_question(instruction),
         "selection": selection,
         "page_stats": stats or {},
     }
@@ -663,6 +778,8 @@ def revise_page(
     if len(html) > MAX_PAGE_HTML:
         raise LunaAPIError("La page actuelle est trop longue pour être modifiée.")
     safe_identity = _safe_identity(identity)
+    visuels_autorises = {str(visuel.get("url")) for visuel in (safe_identity.get("images") or [])
+                         if isinstance(visuel, dict) and visuel.get("url")}
     screenshot = _validate_screenshot(screenshot_data_url)
     attachments = [_validate_screenshot(image) for image in (images or [])[:3]]
     names = [name for name in (existing_names or []) if name not in {"consent", "sillage_consent"} and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", name)][:40]
@@ -680,11 +797,39 @@ def revise_page(
         try:
             result = LunaPage.model_validate_json(_output_text(response))
             _validate_page_result(result)
-            if not html and result.region is not None:
+            if not html and (result.region is not None or not result.html.strip()):
                 raise ValueError("La première génération doit contenir une page HTML complète.")
             selected_region = selection.get("region")
-            if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
+            # Une region n'est refusee que si l'utilisateur en visait une autre.
+            # Sans selection, repondre par region est au contraire ce qu'on veut :
+            # c'est ce qui evite de reecrire tout le document pour un bouton, et
+            # merge_page_region verifie de toute facon qu'elle existe une fois.
+            if result.region not in (None, "style") and selected_region and result.region != selected_region:
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
+            # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
+            # refus sec, donc la seconde tentative se contente d'alerter.
+            # Un second <style> redeclare tout :root et gonfle le document a
+            # chaque retouche. La regle existe dans les consignes ; ici on la tient.
+            if attempt == 1 and result.region is None and result.html.lower().count("<style") > 1:
+                raise ValueError(
+                    "La page doit contenir un seul bloc <style>. Fusionne tes regles dans celui "
+                    "qui existe au lieu d'en ajouter un. Ne parle pas de cette consigne dans message."
+                )
+            if attempt == 1 and result.html.strip() and (bavardage := meta_discourse(result.html)):
+                raise ValueError(
+                    "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
+                    "Retire ou reecris ces passages, sans parler de cette consigne dans message : " + " / ".join(bavardage)
+                )
+            if attempt == 1 and (bruts := markdown_leftovers(result.html)):
+                raise ValueError(
+                    "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
+                    "Remplace-les par un lien <a href> au texte lisible, sans parler de cette consigne dans message : " + " / ".join(bruts)
+                )
+            if attempt == 1 and (intruses := foreign_images(result.html, visuels_autorises)):
+                raise ValueError(
+                    "Ces images ne font pas partie des visuels fournis et ne peuvent pas etre utilisees : "
+                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image. Ne parle pas de cette consigne dans message."
+                )
         except (ValidationError, ValueError) as exc:
             correction = str(exc)
             logger.warning("Luna page refused (attempt %s): %s", attempt, correction[:200])
@@ -692,6 +837,10 @@ def revise_page(
                 raise LunaAPIError(f"Luna n'a pas pu produire une page valide : {correction}") from exc
             continue
         logger.info("Luna page produced in %.1fs, attempt %s, %s tokens", time.monotonic() - started, attempt, (response.get("usage") or {}).get("total_tokens", "?"))
+        if reste := meta_discourse(result.html):
+            logger.warning("Luna page keeps meta discourse: %s", " / ".join(reste)[:200])
+        if bruts := markdown_leftovers(result.html):
+            logger.warning("Luna page keeps raw markdown or urls: %s", " / ".join(bruts)[:200])
         return result.model_dump()
     raise LunaAPIError("Luna n'a pas pu produire une page valide.")
 
@@ -758,6 +907,8 @@ def stream_page_revision(
     if len(html) > MAX_PAGE_HTML:
         raise LunaAPIError("La page actuelle est trop longue pour être modifiée.")
     safe_identity = _safe_identity(identity)
+    visuels_autorises = {str(visuel.get("url")) for visuel in (safe_identity.get("images") or [])
+                         if isinstance(visuel, dict) and visuel.get("url")}
     screenshot = _validate_screenshot(screenshot_data_url)
     attachments = [_validate_screenshot(image) for image in (images or [])[:3]]
     names = [name for name in (existing_names or []) if name not in {"consent", "sillage_consent"} and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", name)][:40]
@@ -811,17 +962,49 @@ def stream_page_revision(
             output = raw or _output_text(completed or {})
             result = LunaPage.model_validate_json(output)
             _validate_page_result(result)
-            if not html and result.region is not None:
+            if not html and (result.region is not None or not result.html.strip()):
                 raise ValueError("La première génération doit contenir une page HTML complète.")
             selected_region = selection.get("region")
-            if result.region is not None and (not selected_region or result.region not in {selected_region, "style"}):
+            # Une region n'est refusee que si l'utilisateur en visait une autre.
+            # Sans selection, repondre par region est au contraire ce qu'on veut :
+            # c'est ce qui evite de reecrire tout le document pour un bouton, et
+            # merge_page_region verifie de toute facon qu'elle existe une fois.
+            if result.region not in (None, "style") and selected_region and result.region != selected_region:
                 raise ValueError("La région renvoyée ne correspond pas à la zone sélectionnée.")
+            # Reprise unique : une page par ailleurs correcte vaut mieux qu'un
+            # refus sec, donc la seconde tentative se contente d'alerter.
+            # Un second <style> redeclare tout :root et gonfle le document a
+            # chaque retouche. La regle existe dans les consignes ; ici on la tient.
+            if attempt == 1 and result.region is None and result.html.lower().count("<style") > 1:
+                raise ValueError(
+                    "La page doit contenir un seul bloc <style>. Fusionne tes regles dans celui "
+                    "qui existe au lieu d'en ajouter un. Ne parle pas de cette consigne dans message."
+                )
+            if attempt == 1 and result.html.strip() and (bavardage := meta_discourse(result.html)):
+                raise ValueError(
+                    "La page se decrit elle-meme au lieu de s'adresser aux visiteurs. "
+                    "Retire ou reecris ces passages, sans parler de cette consigne dans message : " + " / ".join(bavardage)
+                )
+            if attempt == 1 and (bruts := markdown_leftovers(result.html)):
+                raise ValueError(
+                    "La page est un document HTML : ces passages montrent du Markdown ou une URL en clair. "
+                    "Remplace-les par un lien <a href> au texte lisible, sans parler de cette consigne dans message : " + " / ".join(bruts)
+                )
+            if attempt == 1 and (intruses := foreign_images(result.html, visuels_autorises)):
+                raise ValueError(
+                    "Ces images ne font pas partie des visuels fournis et ne peuvent pas etre utilisees : "
+                    + " / ".join(intruses) + ". Reprends une URL de identity.images, ou retire l'image. Ne parle pas de cette consigne dans message."
+                )
         except (ValidationError, ValueError, LunaAPIError) as exc:
             correction = str(exc)
             if attempt == 2:
                 raise LunaAPIError(f"Luna n'a pas pu produire une page valide : {correction}") from exc
             yield {"type": "reset"}
             continue
+        if reste := meta_discourse(result.html):
+            logger.warning("Luna page keeps meta discourse: %s", " / ".join(reste)[:200])
+        if bruts := markdown_leftovers(result.html):
+            logger.warning("Luna page keeps raw markdown or urls: %s", " / ".join(bruts)[:200])
         yield {"type": "final", **result.model_dump()}
         return
 

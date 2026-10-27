@@ -6,9 +6,11 @@ remain readable after the React renderer is removed.
 
 from __future__ import annotations
 
-from html import escape
+from html import escape, unescape
 from html.parser import HTMLParser
 import re
+import unicodedata
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import bleach
 import tinycss2
@@ -34,14 +36,24 @@ _DROP_VOID = frozenset("base link meta".split())
 _CSS_BAD_PROPERTIES = frozenset({"behavior", "-moz-binding"})
 _PAGE_CSP = (
     "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; "
-    "img-src https: data:; object-src 'none'; base-uri 'none'; "
+    # 'self' autorise le relais des visuels du client, servi a la meme origine
+    # que la page. Sans lui, ils passent en https mais pas en http local.
+    "img-src 'self' https: data:; object-src 'none'; base-uri 'none'; "
     "form-action 'none'; connect-src 'none'; frame-src 'none'"
 )
+
+
+# Les visuels du client sont servis par Sillage, a la meme origine que la page :
+# une image d'une autre origine souille le canvas et casse la capture de zone.
+PROXY_PREFIX = "/media/brand?"
 
 
 def _safe_url(value: str, *, image: bool = False) -> bool:
     value = value.strip()
     if value.lower().startswith("https://"):
+        return True
+    # Seul ce chemin relatif est accepte : // mene ailleurs, pas chez nous.
+    if image and value.startswith(PROXY_PREFIX):
         return True
     return image and bool(re.match(r"(?is)^data:image/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+$", value))
 
@@ -361,8 +373,9 @@ def prepare_page(html: str, *, require_form: bool) -> tuple[str, list[dict]]:
     guard.feed(html)
     guarded = "".join(guard.parts)
     cleaned = bleach.clean(guarded, tags=_TAGS, attributes=_allowed_attr,
-                           protocols={"https", "data"}, strip=True,
+                           protocols={"https", "data", ""}, strip=True,
                            strip_comments=True, css_sanitizer=_PageCSS())
+    cleaned = _merge_styles(_clean_links(cleaned))
     manifest = _manifest(cleaned, require_form=require_form)
     document = f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>{cleaned}</body></html>'
     if len(document) > MAX_PAGE_HTML:
@@ -555,3 +568,210 @@ button{justify-self:start;min-height:46px;padding:0 24px;border:0;border-radius:
 @media(max-width:600px){body{padding:24px 16px}main{margin:4vh auto}button{width:100%}}
 """
     return f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{css}</style></head><body>{body}</body></html>'
+
+
+# --- Méta-discours -----------------------------------------------------------
+#
+# Une page produite par Luna s'adresse aux visiteurs. Il lui arrive pourtant d'y
+# écrire ce qu'elle dirait à la personne qui l'a commandée : la demande
+# reformulée (« un formulaire opt-in clair et rassurant pour capter des
+# prospects »), ou un encart qui justifie ses choix et ses sources. Le visiteur
+# le lit, et ça décrédibilise la page.
+#
+# La liste de marqueurs ci-dessous est volontairement étroite. Elle ne cherche
+# pas à juger un style : elle attrape le vocabulaire du livrable, qu'on n'écrit
+# pas à un visiteur, et les tournures par lesquelles Luna se raconte. Mieux vaut
+# laisser passer une phrase douteuse que refuser une page légitime.
+
+_META_JARGON = (
+    "opt-in", "optin", "opt in",
+    "landing page", "page de capture", "tunnel de conversion",
+    "call-to-action", "call to action", "taux de conversion",
+    "lead magnet", "copywriting", "wireframe",
+)
+
+_META_JUSTIFICATION = (
+    "met l'accent sur",
+    "le contenu s'appuie", "ce contenu s'appuie", "s'appuie sur les messages",
+    "je me suis appuye", "je me suis inspire",
+    "mis en avant publiquement", "selon le site officiel",
+    "le brief", "votre brief",
+    "cette page a ete concue", "ce formulaire a ete concu",
+)
+
+
+class _VisibleText(HTMLParser):
+    """Texte que le visiteur lit réellement, sans le style ni l'en-tête."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.chunks: list[str] = []
+        self._muted = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in ("style", "script", "title", "head"):
+            self._muted += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("style", "script", "title", "head") and self._muted:
+            self._muted -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._muted and data.strip():
+            self.chunks.append(data.strip())
+
+
+def _flatten(value: str) -> str:
+    """Minuscules sans accents ni apostrophe typographique, pour comparer."""
+    value = value.replace("\u2019", "'").replace("\u02bc", "'")
+    value = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in value if not unicodedata.combining(char)).lower()
+
+
+def meta_discourse(html: str) -> list[str]:
+    """Phrases où la page se décrit elle-même, au lieu de s'adresser au visiteur.
+
+    Renvoie les extraits fautifs pour qu'on puisse les citer au modèle : une
+    reprise corrige bien mieux quand elle sait quelle phrase retirer.
+    """
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # un HTML cassé est traité ailleurs, pas ici
+        return []
+
+    marqueurs = _META_JARGON + _META_JUSTIFICATION
+    fautifs: list[str] = []
+    for chunk in parser.chunks:
+        for phrase in re.split(r"(?<=[.!?;])\s+|\n+", chunk):
+            phrase = phrase.strip()
+            if not phrase:
+                continue
+            plat = _flatten(phrase)
+            if any(marqueur in plat for marqueur in marqueurs) and phrase not in fautifs:
+                fautifs.append(phrase[:160])
+    return fautifs[:6]
+
+
+# --- Markdown et parametres de suivi -----------------------------------------
+#
+# Luna ecrit parfois un lien en Markdown dans un document HTML : le visiteur lit
+# alors « ([smartduck.fr](https://smartduck.fr/?utm_source=openai)) », crochets
+# et URL compris. L'outil de recherche web ajoute de son cote un utm_source qui
+# annonce aux prospects d'ou vient le texte.
+
+_MARKDOWN_LINK = re.compile(r"\[[^\]\r\n]{1,120}\]\(\s*<?https?://[^)\s]+>?\s*\)")
+_MARKDOWN_EMPHASIS = re.compile(r"\*\*[^*\r\n]{2,80}\*\*")
+_BARE_URL = re.compile(r"(?<![\w@])https?://\S{4,}")
+_TRACKING = re.compile(r"^(utm_|mc_|_hs|pk_|piwik_)|^(gclid|fbclid|msclkid|igshid|ref_src|yclid)$", re.IGNORECASE)
+
+
+def markdown_leftovers(html: str) -> list[str]:
+    """Passages ou la page montre du Markdown ou une URL brute au visiteur."""
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # un HTML casse est traite ailleurs
+        return []
+
+    fautifs: list[str] = []
+    for chunk in parser.chunks:
+        for motif in (_MARKDOWN_LINK, _MARKDOWN_EMPHASIS, _BARE_URL):
+            for trouve in motif.findall(chunk):
+                extrait = (trouve if isinstance(trouve, str) else trouve[0])[:160]
+                if extrait not in fautifs:
+                    fautifs.append(extrait)
+    return fautifs[:6]
+
+
+_IMAGE_SOURCE = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
+_CSS_IMAGE = re.compile(r"""url\(\s*['"]?(https?://[^)'"]+)""", re.IGNORECASE)
+
+
+def foreign_images(html: str, allowed: set[str]) -> list[str]:
+    """Images de la page qui ne viennent pas des visuels fournis.
+
+    Le modele n'a aucun moyen de savoir si une URL trouvee sur le web existe
+    encore, ni si elle lui appartient. Une image inventee casse la page ou
+    emprunte le bien d'autrui : on n'accepte que ce qu'on a nous-memes valide.
+    """
+    # Les deux cotes sont ramenes a la meme forme : dans le document, un & est
+    # ecrit &amp;, alors que la liste des visuels porte l'URL brute. Sans ce
+    # unescape, chaque image deja en place etait declaree intruse, et Luna la
+    # supprimait pour obeir a la reprise.
+    permises = {unescape(url) for url in allowed}
+    trouvees = _IMAGE_SOURCE.findall(html) + _CSS_IMAGE.findall(html)
+    intruses = []
+    for source in trouvees:
+        source = unescape(source.strip())
+        if source.startswith("data:") or source in permises:
+            continue
+        if source not in intruses:
+            intruses.append(source[:160])
+    return intruses[:6]
+
+
+def same_document(first: str, second: str) -> bool:
+    """Deux pages sont-elles identiques, au bruit de serialisation pres ?
+
+    L'assainissement reecrit le CSS a chaque passage et y laisse une espace de
+    plus. Comparer les chaines telles quelles faisait donc passer pour une
+    modification une reponse qui ne changeait rien : une version etait
+    enregistree, et Luna annoncait un changement qui n'existait pas.
+    """
+    def normalise(document: str) -> str:
+        document = re.sub(r"\s+", " ", document)
+        # Les blancs entre balises ne se voient pas : les retirer evite qu'un
+        # simple reformatage passe pour une modification.
+        document = re.sub(r"\s*<", "<", document)
+        document = re.sub(r">\s*", ">", document)
+        return document.strip()
+
+    return normalise(first) == normalise(second)
+
+
+def strip_tracking(url: str) -> str:
+    """Retire les parametres de suivi d'une URL, en gardant le reste intact."""
+    if "?" not in url:
+        return url
+    parts = urlsplit(url)
+    gardes = [(cle, valeur) for cle, valeur in parse_qsl(parts.query, keep_blank_values=True)
+              if not _TRACKING.match(cle)]
+    return urlunsplit(parts._replace(query=urlencode(gardes)))
+
+
+def _merge_styles(html: str) -> str:
+    """Rassemble les blocs <style> en un seul, a la place du premier.
+
+    Luna ajoute parfois une feuille plutot que de modifier celle qui existe, en
+    redeclarant tout :root au passage. L'ordre des regles est conserve, donc la
+    cascade ne change pas, et le document cesse de gonfler a chaque retouche.
+    """
+    blocs = re.findall(r"<style[^>]*>(.*?)</style>", html, re.IGNORECASE | re.DOTALL)
+    if len(blocs) < 2:
+        return html
+    premier = True
+
+    def remplacer(trouve: re.Match) -> str:
+        nonlocal premier
+        if premier:
+            premier = False
+            return "<style>" + "".join(blocs) + "</style>"
+        return ""
+
+    return re.sub(r"<style[^>]*>.*?</style>", remplacer, html, flags=re.IGNORECASE | re.DOTALL)
+
+
+def _clean_links(html: str) -> str:
+    """Nettoie les URL des attributs du document deja assaini.
+
+    La valeur lue est deja echappee : sans le unescape, un &amp; d'origine
+    ressortirait en &amp;amp; et couperait le parametre suivant.
+    """
+    def remplacer(trouve: re.Match) -> str:
+        propre = strip_tracking(unescape(trouve.group(2)))
+        return f'{trouve.group(1)}="{escape(propre, quote=True)}"'
+
+    return re.sub(r'(href|src)="([^"]*)"', remplacer, html)
