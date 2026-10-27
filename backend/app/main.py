@@ -99,6 +99,8 @@ def create_form_pages(db: Session, form: Form, initial_html: tuple[str, list[dic
     db.flush()
     db.add(Page(id=form.id, form=form, tunnel_id=tunnel_id, name=form.name, slug=form.slug, role="form", position=0,
                 next_page_id=thanks.id, html=html, manifest=manifest, visits=form.visits))
+    # La page doit exister en base avant que le tunnel ne pointe dessus.
+    db.flush()
     tunnel.entry_page_id = form.id
     form.thank_you = {}
 
