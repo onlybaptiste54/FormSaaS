@@ -348,3 +348,56 @@ def test_the_old_refusals_still_hold():
     assert "mailto:" not in page('<img src="mailto:a@b.fr" alt="x">')
     assert 'src="#' not in page('<img src="#tarifs" alt="x">')
     assert "javascript" not in page('<a href="tel:javascript:alert(1)">Appel</a>')
+
+
+def test_the_public_document_navigates_without_javascript():
+    """Servi seul, le document n'a plus de parente : les actions doivent naviguer."""
+    from app.page_document import public_document
+
+    stored, _ = prepare_page(
+        '<main data-sillage-region="z"><h1>Offre</h1>'
+        '<button type="button" class="cta" data-sillage-next>Continuer</button></main>',
+        require_form=False)
+    rendu = public_document(stored, title="Mon offre", description="Une description.",
+                            canonical="https://exemple.fr/t/abc", next_url="/t/abc/2")
+
+    # Le bouton reste un <button> : tout le CSS que Luna a écrit pour lui tient.
+    assert '<form action="/t/abc/2" method="get" style="display:contents">' in rendu
+    assert 'class="cta"' in rendu and 'type="submit"' in rendu
+    # type="button" ne soumet rien : il ne doit pas survivre.
+    assert 'type="button"' not in rendu
+    # La référence vit dans le document lui-même.
+    assert "<title>Mon offre</title>" in rendu
+    assert '<meta name="description" content="Une description.">' in rendu
+    assert '<link rel="canonical" href="https://exemple.fr/t/abc">' in rendu
+    assert '<meta property="og:title" content="Mon offre">' in rendu
+
+
+def test_an_action_without_target_leads_nowhere():
+    """Dernière étape sans destination : le bouton est inerte, pas trompeur."""
+    from app.page_document import public_document
+
+    stored, _ = prepare_page(
+        '<main data-sillage-region="z"><h1>Offre</h1>'
+        '<a data-sillage-goal href="https://ancienne-adresse.example">Réserver</a></main>',
+        require_form=False)
+    sans = public_document(stored, title="T", description="")
+    assert "ancienne-adresse" not in sans
+    assert "<form" not in sans
+
+    avec = public_document(stored, title="T", description="", goal_url="/t/abc/go")
+    assert 'href="/t/abc/go"' in avec
+    assert "ancienne-adresse" not in avec
+
+
+def test_only_the_public_document_may_submit_a_form():
+    """L'iframe garde form-action 'none' : c'est la parente qui envoie."""
+    from app.page_document import public_document
+
+    stored, _ = prepare_page('<main data-sillage-region="z"><h1>O</h1>'
+                             '<button type="button" data-sillage-next>Suite</button></main>',
+                             require_form=False)
+    assert "form-action 'none'" in render_page(stored, "")
+    document = public_document(stored, title="T", description="", next_url="/t/a/2")
+    assert "form-action 'self'" in document
+    assert document.count("Content-Security-Policy") == 1

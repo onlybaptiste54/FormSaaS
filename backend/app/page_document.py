@@ -42,13 +42,25 @@ _TAG_ATTRS.update({tag: _SVG_ATTRS for tag in _SVG_TAGS})
 _DROP_CONTENT = frozenset("script iframe object embed foreignobject math noscript template".split())
 _DROP_VOID = frozenset("base link meta".split())
 _CSS_BAD_PROPERTIES = frozenset({"behavior", "-moz-binding"})
-_PAGE_CSP = (
-    "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; "
-    # 'self' autorise le relais des visuels du client, servi a la meme origine
-    # que la page. Sans lui, ils passent en https mais pas en http local.
-    "img-src 'self' https: data:; object-src 'none'; base-uri 'none'; "
-    "form-action 'none'; connect-src 'none'; frame-src 'none'"
-)
+def _page_csp(form_action: str) -> str:
+    """La politique du document. Une seule definition, deux emplois.
+
+    Dans l'iframe de l'editeur et des tunnels de formulaire, c'est la page
+    parente qui intercepte l'envoi : aucun formulaire ne doit partir seul, donc
+    form-action 'none'. Le document public d'un tunnel de vente, lui, n'a plus
+    de parente et navigue par les formulaires GET que le serveur y pose.
+    """
+    return (
+        "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; "
+        # 'self' autorise le relais des visuels du client, servi a la meme origine
+        # que la page. Sans lui, ils passent en https mais pas en http local.
+        "img-src 'self' https: data:; object-src 'none'; base-uri 'none'; "
+        f"form-action {form_action}; connect-src 'none'; frame-src 'none'"
+    )
+
+
+_PAGE_CSP = _page_csp("'none'")
+_PUBLIC_CSP = _page_csp("'self'")
 
 
 # Les visuels du client sont servis par Sillage, a la meme origine que la page :
@@ -259,6 +271,66 @@ class _TextVariables(HTMLParser):
 
     def handle_charref(self, name: str) -> None:
         self.parts.append(f"&#{name};")
+
+
+_ACTION_BUTTON = re.compile(
+    r"(?is)<button\b([^>]*\bdata-sillage-(?:next|goal)\b[^>]*)>(.*?)</button>")
+_ACTION_LINK = re.compile(
+    r"(?is)<a\b([^>]*\bdata-sillage-(?:next|goal)\b[^>]*)>")
+_HREF_ATTR = re.compile(r'(?i)\shref="[^"]*"')
+_BUTTON_TYPE = re.compile(r'(?i)\stype="[^"]*"')
+
+
+def _action_target(attributes: str, next_url: str | None, goal_url: str | None) -> str | None:
+    return goal_url if "data-sillage-goal" in attributes.lower() else next_url
+
+
+def public_document(html: str, *, title: str, description: str, canonical: str = "",
+                    next_url: str | None = None, goal_url: str | None = None) -> str:
+    """Le document tel qu'un visiteur et un robot le recoivent.
+
+    Servi seul, a sa propre adresse, il n'a plus de page parente pour
+    intercepter les clics : les deux actions doivent donc etre de vraies
+    navigations. Chaque bouton est enveloppe dans un formulaire GET pose par le
+    serveur, ce qui marche sans JavaScript et, surtout, laisse le bouton etre
+    un <button> : le CSS que Luna a ecrit pour lui continue de s'appliquer.
+    Le formulaire est en display:contents, donc il ne deplace rien.
+    """
+    html = render_page(html, "").replace(_PAGE_CSP, _PUBLIC_CSP, 1)
+
+    def envelopper(correspondance: re.Match) -> str:
+        attributs, interieur = correspondance.group(1), correspondance.group(2)
+        cible = _action_target(attributs, next_url, goal_url)
+        if not cible:
+            return f"<button{attributs} disabled>{interieur}</button>"
+        # type="button" ne soumet rien : c'est l'envoi du formulaire qui
+        # navigue, donc le bouton doit etre un bouton d'envoi.
+        bouton = f'<button{_BUTTON_TYPE.sub("", attributs)} type="submit">{interieur}</button>'
+        return (f'<form action="{escape(cible, quote=True)}" method="get" style="display:contents">'
+                f"{bouton}</form>")
+
+    def ancrer(correspondance: re.Match) -> str:
+        attributs = correspondance.group(1)
+        cible = _action_target(attributs, next_url, goal_url)
+        attributs = _HREF_ATTR.sub("", attributs)
+        if not cible:
+            return f"<a{attributs}>"
+        return f'<a{attributs} href="{escape(cible, quote=True)}">'
+
+    html = _ACTION_BUTTON.sub(envelopper, html)
+    html = _ACTION_LINK.sub(ancrer, html)
+
+    reference = f"<title>{escape(title, quote=False)}</title>"
+    if description:
+        reference += f'<meta name="description" content="{escape(description, quote=True)}">'
+    reference += f'<meta property="og:title" content="{escape(title, quote=True)}">'
+    if description:
+        reference += f'<meta property="og:description" content="{escape(description, quote=True)}">'
+    reference += '<meta property="og:type" content="website"><meta property="og:site_name" content="Sillage">'
+    if canonical:
+        reference += (f'<link rel="canonical" href="{escape(canonical, quote=True)}">'
+                      f'<meta property="og:url" content="{escape(canonical, quote=True)}">')
+    return html.replace("</head>", f"{reference}</head>", 1)
 
 
 def personalize_page(html: str, answers: dict[str, object]) -> str:
