@@ -566,3 +566,54 @@ def test_promoting_a_version_ends_the_comparison(client, monkeypatch):
     # Le document precedent reste restaurable.
     versions = client.get(f"/api/sales-funnels/{tunnel['id']}/pages/{entree['id']}/versions").json()
     assert len(versions) >= 1
+
+
+def test_a_handful_of_visits_decides_nothing():
+    """Six visites ne distinguent rien : l'interface doit le dire."""
+    from app.sales import compare_versions
+
+    verdict = compare_versions((4, 1), (2, 2))
+    assert verdict["state"] == "insufficient"
+    assert verdict["confidence"] is None
+    assert "28 visites de plus" in verdict["message"]
+
+
+def test_enough_visits_but_too_few_final_clicks():
+    """Le test de proportions a ses conditions d'emploi : on les respecte."""
+    from app.sales import compare_versions
+
+    verdict = compare_versions((200, 2), (200, 3))
+    assert verdict["state"] == "insufficient"
+    assert "trop peu de clics finaux" in verdict["message"]
+
+
+def test_a_small_gap_stays_inconclusive():
+    """10 % contre 12 % sur 400 visites peut venir du hasard."""
+    from app.sales import compare_versions
+
+    verdict = compare_versions((400, 40), (400, 48))
+    assert verdict["state"] == "inconclusive"
+    assert 0.5 < verdict["confidence"] < 0.95
+
+
+def test_a_clear_gap_is_called(client, monkeypatch):
+    """10 % contre 20 % sur 400 visites, c'est tranché, et jamais à 100 %."""
+    from app.sales import compare_versions
+
+    verdict = compare_versions((400, 40), (400, 80))
+    assert verdict["state"] == "confident"
+    assert verdict["confidence"] == 0.99
+    assert "l'emporte" in verdict["message"]
+    # Le témoin peut gagner aussi.
+    assert "témoin" in compare_versions((400, 80), (400, 40))["message"]
+
+
+def test_the_comparison_travels_with_the_figures(client, monkeypatch):
+    """Chaque version comparée porte son verdict ; le témoin n'en a pas."""
+    tunnel = published_funnel(client, monkeypatch)
+    entree = tunnel["pages"][0]
+    variante_de(client, tunnel["id"], entree["id"])
+    versions = next(page for page in client.get(f"/api/sales-funnels/{tunnel['id']}/stats").json()["pages"]
+                    if page["id"] == entree["id"])["variants"]
+    assert versions[0]["verdict"] is None
+    assert versions[1]["verdict"]["state"] == "insufficient"

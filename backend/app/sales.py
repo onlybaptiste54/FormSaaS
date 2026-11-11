@@ -2,6 +2,7 @@
 
 import io
 import json
+import math
 import random
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -503,6 +504,53 @@ class SalesSeoUpdate(BaseModel):
         return value.strip()
 
 
+# En deca, l'ecart observe ne distingue rien : c'est du bruit. Le minimum de
+# visites evite de conclure sur une poignee de passages, et la regle des cinq
+# conversions attendues est la condition d'emploi du test lui-meme.
+MIN_VISITS_PER_VERSION = 30
+MIN_EXPECTED = 5
+CONFIDENT_AT = 0.95
+
+
+def _normal_cdf(value: float) -> float:
+    return 0.5 * (1 + math.erf(value / math.sqrt(2)))
+
+
+def compare_versions(temoin: tuple[int, int], variante: tuple[int, int]) -> dict:
+    """Dit si l'ecart entre deux versions se distingue du hasard.
+
+    Test de comparaison de deux proportions. Il n'est valable qu'au-dela d'un
+    certain nombre de passages : en dessous, on le dit plutot que d'afficher un
+    pourcentage qui ferait trancher sur du bruit.
+    """
+    vues_a, buts_a = temoin
+    vues_b, buts_b = variante
+    manquantes = max(MIN_VISITS_PER_VERSION - vues_a, MIN_VISITS_PER_VERSION - vues_b, 0)
+    if manquantes:
+        return {"state": "insufficient", "confidence": None,
+                "message": f"Pas encore de quoi trancher : {manquantes} visites de plus sur la version la moins vue."}
+
+    part = (buts_a + buts_b) / (vues_a + vues_b)
+    attendus = min(vues_a * part, vues_a * (1 - part), vues_b * part, vues_b * (1 - part))
+    if attendus < MIN_EXPECTED:
+        return {"state": "insufficient", "confidence": None,
+                "message": "Pas encore de quoi trancher : trop peu de clics finaux pour comparer."}
+
+    ecart = buts_b / vues_b - buts_a / vues_a
+    erreur = math.sqrt(part * (1 - part) * (1 / vues_a + 1 / vues_b))
+    if not erreur:
+        return {"state": "inconclusive", "confidence": 0.0,
+                "message": "Les deux versions font exactement jeu égal."}
+    # Plafonne a 99 % : aucune mesure ne donne une certitude.
+    confiance = min(2 * _normal_cdf(abs(ecart) / erreur) - 1, 0.99)
+    if confiance < CONFIDENT_AT:
+        return {"state": "inconclusive", "confidence": round(confiance, 3),
+                "message": f"Écart non concluant : il peut venir du hasard ({round(confiance * 100)} % de certitude)."}
+    gagnante = "Cette version" if ecart > 0 else "La version témoin"
+    return {"state": "confident", "confidence": round(confiance, 3),
+            "message": f"{gagnante} l'emporte, avec {round(confiance * 100)} % de certitude."}
+
+
 def tunnel_seo(tunnel: Tunnel) -> dict:
     """Ce que montrent un moteur de recherche et l'aperçu d'un lien partagé.
 
@@ -740,15 +788,24 @@ def sales_stats(tunnel_id: str, days: int = Query(default=30, ge=1, le=90),
         if not page.variants:
             return []
         lignes = [("", "Version A (témoin)")] + [(item.id, item.name) for item in page.variants]
-        return [{"id": identifiant, "name": nom,
-                 "visits": vus.get((page.id, identifiant, "page_view"), 0),
-                 "actions": (vus.get((page.id, identifiant, "step_click"), 0)
-                             + vus.get((page.id, identifiant, "goal_click"), 0)),
-                 "goals": buts.get((page.id, identifiant), 0),
-                 "conversion": round(buts.get((page.id, identifiant), 0)
-                                     / vus[(page.id, identifiant, "page_view")] * 100, 1)
-                 if vus.get((page.id, identifiant, "page_view")) else None}
-                for identifiant, nom in lignes]
+
+        def chiffres(identifiant: str) -> tuple[int, int]:
+            return (vus.get((page.id, identifiant, "page_view"), 0), buts.get((page.id, identifiant), 0))
+
+        temoin = chiffres("")
+        resultat = []
+        for identifiant, nom in lignes:
+            visites, aboutis_ = chiffres(identifiant)
+            resultat.append({
+                "id": identifiant, "name": nom, "visits": visites,
+                "actions": (vus.get((page.id, identifiant, "step_click"), 0)
+                            + vus.get((page.id, identifiant, "goal_click"), 0)),
+                "goals": aboutis_,
+                "conversion": round(aboutis_ / visites * 100, 1) if visites else None,
+                # Le temoin ne se compare pas a lui-meme.
+                "verdict": None if not identifiant else compare_versions(temoin, (visites, aboutis_)),
+            })
+        return resultat
 
     pages = sorted(tunnel.pages, key=lambda page: page.position)
     entry_visits = counts.get((tunnel.entry_page_id, "page_view"), 0)

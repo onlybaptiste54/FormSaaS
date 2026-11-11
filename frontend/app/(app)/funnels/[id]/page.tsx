@@ -7,6 +7,7 @@ import { PageFrame } from "@/components/page-frame";
 import { ErrorState, Loading } from "@/components/ui";
 import { API_URL, api, getToken } from "@/lib/api";
 import type { SalesPage, SalesStats, SalesTunnel } from "@/lib/types";
+type SalesVerdict = SalesStats["pages"][number]["variants"][number]["verdict"];
 
 type Version = { id: string; created_at: string };
 type StepChange = { tunnel: SalesTunnel; warnings: string[] };
@@ -97,8 +98,14 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
     setVariantId("");
   }
 
-  async function promoteVariant(pageId: string, versionId: string) {
-    if (busy || !window.confirm("Retenir cette version ? Elle remplace l’étape et la comparaison s’arrête.")) return;
+  async function promoteVariant(pageId: string, versionId: string, verdict: SalesVerdict) {
+    const reserve = verdict && verdict.state !== "confident"
+      ? `
+
+${verdict.message}
+Rien n’empêche de la retenir, mais l’écart mesuré ne le justifie pas encore.`
+      : "";
+    if (busy || !window.confirm(`Retenir cette version ? Elle remplace l’étape et la comparaison s’arrête.${reserve}`)) return;
     await changeSteps(`/pages/${pageId}/variants/${versionId}/promote`, { method: "POST" }, "La version retenue remplace l’étape.");
     setVariantId("");
   }
@@ -219,7 +226,7 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
       {!stats ? <Loading/> : <>
         <section className="metric-grid metric-grid-3"><article className="metric-card"><p>Entrées dans le tunnel</p><strong>{stats.visits}</strong><span>Parcours distincts</span></article><article className="metric-card"><p>Clics vers l’action finale</p><strong>{stats.goals}</strong><span>{tunnel.goal_label}</span></article><article className="metric-card"><p>Taux de passage</p><strong>{stats.conversion} %</strong><span>Entrée → clic final</span></article></section>
         <article className="panel sales-trend"><h2>Activité du tunnel</h2><div className="sales-trend-bars">{stats.daily.map(day => { const max = Math.max(...stats.daily.map(item => item.visits), 1); return <div key={day.date} title={`${day.date} · ${day.visits} entrées · ${day.goals} clics finaux`}><span style={{ height: `${Math.max(3, day.visits / max * 100)}%` }}/><i style={{ height: `${Math.max(3, day.goals / max * 100)}%` }}/></div>; })}</div><p>Vert : entrées · Orange : clics finaux</p></article>
-        <div className="sales-stats-grid"><article className="panel"><h2>Passage par étape</h2>{stats.pages.map((item, index) => <div key={item.id}><div className="sales-stat-row"><span>{index + 1}. {item.name}</span><strong>{item.visits} vues</strong><small>{item.continuation === null ? `${item.actions} clics finaux` : `${item.continuation} % poursuivent`}</small></div>{item.variants.length > 0 && <div className="sales-variant-rows">{item.variants.map(version => <div key={version.id || "temoin"}><span>{version.name}</span><strong>{version.visits} vues</strong><small>{version.conversion === null ? "pas encore de visite" : `${version.conversion} % vont au bout`}</small>{version.id ? <button type="button" disabled={busy} onClick={() => void promoteVariant(item.id, version.id)}>Retenir</button> : <em>en place</em>}</div>)}</div>}</div>)}</article><article className="panel"><h2>Sources de visite</h2>{stats.sources.length ? stats.sources.map(item => <div className="sales-stat-row" key={item.source}><span>{item.source}</span><strong>{item.visits} entrées</strong><small>{item.goals} clics finaux</small></div>) : <p className="muted">Les sources apparaîtront après les premières visites.</p>}</article></div>
+        <div className="sales-stats-grid"><article className="panel"><h2>Passage par étape</h2>{stats.pages.map((item, index) => <div key={item.id}><div className="sales-stat-row"><span>{index + 1}. {item.name}</span><strong>{item.visits} vues</strong><small>{item.continuation === null ? `${item.actions} clics finaux` : `${item.continuation} % poursuivent`}</small></div>{item.variants.length > 0 && <div className="sales-variant-rows">{item.variants.map(version => <div key={version.id || "temoin"} className={version.verdict ? `verdict-${version.verdict.state}` : ""}><span>{version.name}</span><strong>{version.visits} vues</strong><small>{version.conversion === null ? "pas encore de visite" : `${version.conversion} % vont au bout`}</small>{version.id ? <button type="button" disabled={busy} onClick={() => void promoteVariant(item.id, version.id, version.verdict)}>Retenir</button> : <em>en place</em>}{version.verdict && <small className="sales-variant-verdict">{version.verdict.message}</small>}</div>)}</div>}</div>)}</article><article className="panel"><h2>Sources de visite</h2>{stats.sources.length ? stats.sources.map(item => <div className="sales-stat-row" key={item.source}><span>{item.source}</span><strong>{item.visits} entrées</strong><small>{item.goals} clics finaux</small></div>) : <p className="muted">Les sources apparaîtront après les premières visites.</p>}</article></div>
         <p className="sales-stats-note">Le clic final indique une intention. Il ne confirme ni une réservation ni une vente sur le site de destination.</p>
       </>}
     </div>}
