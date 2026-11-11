@@ -108,6 +108,7 @@ def upgrade(connection):
     add_column(connection, "tunnels", "goal_label", "VARCHAR(100)")
     add_column(connection, "tunnels", "seo_title", "VARCHAR(70)")
     add_column(connection, "tunnels", "seo_description", "VARCHAR(160)")
+    add_column(connection, "tunnel_events", "variant_id", "VARCHAR(36) DEFAULT ''")
 
     if legacy:
         split_campaigns_into_forms(connection)

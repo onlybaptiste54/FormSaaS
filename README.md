@@ -42,6 +42,7 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Parcours sans JavaScript : chaque bouton d'action est enveloppé par le serveur dans un formulaire GET, et l'action finale passe par `/t/slug/go`, qui enregistre le clic puis redirige
 - Référencement : titre et description par tunnel, repli sur le nom et l'offre, écrits dans le `<head>` du document avec les balises Open Graph et le lien canonique, plus `robots.txt` et `sitemap.xml` alimentés par les tunnels en ligne
 - Statistiques par tunnel et par période : entrées, passage entre pages, clics finaux, évolution quotidienne et sources (`?source=` ou `?utm_source=`)
+- Tests A/B : jusqu'à trois autres versions d'une étape, chacune copie de celle en ligne puis retouchée avec Luna. Le tirage est figé par session, le clic final remonte à la version vue même plusieurs étapes plus loin, et la version retenue remplace l'étape
 - Mesure de parcours sans donnée personnelle : ni adresse IP ni user-agent enregistrés, événements dédupliqués par session et par étape, et oubliés au-delà de treize mois
 - Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.
 - Connexion sécurisée par jeton, tentatives limitées et rôles appliqués sur chaque écriture
