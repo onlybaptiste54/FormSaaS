@@ -34,8 +34,9 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 ## Fonctionnalités livrées
 
 - Assistant en trois étapes pour créer un tunnel de vente : offre, arguments et destination de l’action finale
-- Deux pages générées par Luna avec le profil de marque, aperçu ordinateur/mobile, retouches en langage naturel, brouillons et versions précédentes
-- Publication par lien, mise en pause, correction du lien final et export HTML ZIP du tunnel publié
+- Pages générées par Luna avec le profil de marque, aperçu ordinateur/mobile, retouches en langage naturel, brouillons et versions précédentes
+- Parcours de deux à vingt étapes : ajout d'une étape décrite en une phrase, réordonnancement, suppression. L'étape qui en précède une autre porte le bouton de passage, la dernière le bouton d'action finale, et l'interface signale une page dont le bouton ne correspond plus à sa place
+- Publication par lien, mise en pause, correction du lien final et export HTML ZIP du tunnel publié, une page par étape avec la chaîne recopiée en dur
 - Statistiques par tunnel et par période : entrées, passage entre pages, clics finaux, évolution quotidienne et sources (`?source=` ou `?utm_source=`)
 - Mesure de parcours sans donnée personnelle : ni adresse IP ni user-agent enregistrés, événements dédupliqués par session et par étape, et oubliés au-delà de treize mois
 - Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.

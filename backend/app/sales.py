@@ -31,9 +31,11 @@ router = APIRouter()
 # grossir tunnel_events sans fin. Un seul seau pour les trois, sinon le budget
 # serait triple. Large : un parcours honnete coute trois a cinq appels.
 JOURNEY_CALLS, JOURNEY_WINDOW = 120, 10 * 60
+# Meme plafond que les tunnels de formulaire.
+MAX_STEPS = 20
 
 SALES_PAGE_INSTRUCTIONS = """Tu es Luna, directrice artistique et conceptrice de tunnels de vente.
-Tu produis exclusivement le JSON demandé : message, html et region. Le HTML est un document complet, en français, avec un seul bloc <style> et une composition responsive soignée. Utilise la marque et le brief commercial fournis ; ne crée ni témoignage, ni chiffre, ni garantie, ni certification non fournis. Les pages s'adressent aux visiteurs, sans commentaire sur ton travail. Aucun script, iframe, formulaire, lien de paiement inventé ou ressource externe non fournie. Une image ne peut provenir que de identity.images. Balise les sections avec data-sillage-region. Sur la page d'ouverture, termine par un bouton <button type="button" data-sillage-next>Découvrir l'offre</button>. Sur la page d'offre, termine par un bouton <button type="button" data-sillage-goal>...</button> dont le libellé reprend exactement l'action du brief. Le serveur gère ces actions ; ne leur mets aucune URL. Pour une retouche, garde tout le reste de la page, et réponds avec html vide si la demande est une simple question. Une région partielle doit contenir sa balise racine complète ; region="style" contient le bloc style complet."""
+Tu produis exclusivement le JSON demandé : message, html et region. Le HTML est un document complet, en français, avec un seul bloc <style> et une composition responsive soignée. Utilise la marque et le brief commercial fournis ; ne crée ni témoignage, ni chiffre, ni garantie, ni certification non fournis. Les pages s'adressent aux visiteurs, sans commentaire sur ton travail. Aucun script, iframe, formulaire, lien de paiement inventé ou ressource externe non fournie. Une image ne peut provenir que de identity.images. Balise les sections avec data-sillage-region. Sur la page d'ouverture, termine par un bouton <button type="button" data-sillage-next>Découvrir l'offre</button>. Sur une étape intermédiaire, termine par un bouton <button type="button" data-sillage-next>...</button> dont le libellé invite à continuer. Sur la page d'offre, termine par un bouton <button type="button" data-sillage-goal>...</button> dont le libellé reprend exactement l'action du brief. Le serveur gère ces actions ; ne leur mets aucune URL. Pour une retouche, garde tout le reste de la page, et réponds avec html vide si la demande est une simple question. Une région partielle doit contenir sa balise racine complète ; region="style" contient le bloc style complet."""
 
 
 class SalesTunnelCreate(BaseModel):
@@ -145,38 +147,87 @@ class _SalesActionCheck(HTMLParser):
             self.valid_button = True
 
 
-def validate_sales_page(html: str, role: str) -> None:
-    action = "data-sillage-next" if role == "landing" else "data-sillage-goal"
+def has_action(html: str, action: str) -> bool:
     checker = _SalesActionCheck(action)
     checker.feed(html)
-    other_action = "data-sillage-goal" if role == "landing" else "data-sillage-next"
-    other = _SalesActionCheck(other_action)
-    other.feed(html)
-    if not checker.valid_button or checker.has_form or other.valid_button:
-        raise ValueError("La page doit comporter un bouton d'action actif, sans formulaire.")
+    return checker.valid_button
 
 
-def generate_step(role: str, data: SalesTunnelCreate, identity: dict) -> tuple[str, list[dict]]:
-    instruction = (
-        "Crée la première page du tunnel : une accroche forte qui présente le besoin, la promesse "
-        "et les points forts vérifiés, puis invite à découvrir l'offre."
-        if role == "landing" else
-        "Crée la page d'offre : explique concrètement l'offre, réponds aux objections que le brief permet "
-        f"de traiter, puis termine par l'action « {data.goal_label} »."
-    )
+def collects_data(html: str) -> bool:
+    checker = _SalesActionCheck("data-sillage-next")
+    checker.feed(html)
+    return checker.has_form
+
+
+def validate_sales_page(html: str, *, has_next: bool) -> None:
+    """L'action attendue vient de la place de la page, plus de son role.
+
+    Une etape suivie d'une autre porte le bouton de passage ; la derniere porte
+    le bouton d'action finale, sinon le parcours n'a pas de sortie. Le bouton
+    final reste autorise sur une etape intermediaire : un visiteur convaincu
+    plus tot doit pouvoir partir tout de suite. Le passage, lui, n'a aucun sens
+    sur la derniere.
+    """
+    if collects_data(html):
+        raise ValueError("Cette étape ne doit pas collecter de données personnelles.")
+    if has_next:
+        if not has_action(html, "data-sillage-next"):
+            raise ValueError("Cette étape doit comporter un bouton de passage à la suivante.")
+        return
+    if not has_action(html, "data-sillage-goal"):
+        raise ValueError("La dernière étape doit comporter le bouton d'action finale.")
+    if has_action(html, "data-sillage-next"):
+        raise ValueError("La dernière étape ne peut pas renvoyer vers une étape suivante.")
+
+
+def relink(tunnel: Tunnel, ordered: list[Page]) -> None:
+    """Reecrit les positions et la chaine depuis une seule liste ordonnee.
+
+    L'ajout, la suppression et le deplacement passent tous par ici : la
+    position et next_page_id ne peuvent donc pas se contredire.
+    """
+    for index, page in enumerate(ordered):
+        page.position = index
+        page.next_page_id = ordered[index + 1].id if index + 1 < len(ordered) else None
+    tunnel.entry_page_id = ordered[0].id if ordered else None
+
+
+def action_warnings(ordered: list[Page]) -> list[str]:
+    """Signale les etapes dont le bouton ne correspond plus a leur place.
+
+    On ne refuse pas le deplacement : on le dit, et l'utilisateur retouche la
+    page avec Luna. Refuser rendrait le reordonnancement impraticable.
+    """
+    messages = []
+    for index, page in enumerate(ordered):
+        html = page.draft_html or page.html
+        if index + 1 < len(ordered):
+            if not has_action(html, "data-sillage-next"):
+                messages.append(f"« {page.name} » n'a plus de bouton vers l'étape suivante.")
+        elif not has_action(html, "data-sillage-goal"):
+            messages.append(f"« {page.name} » est la dernière étape mais n'a pas le bouton d'action finale.")
+    return messages
+
+
+def generate_step(brief: dict, identity: dict, *, role: str, instruction: str,
+                  has_next: bool) -> tuple[str, list[dict]]:
     result = revise_page(
         "", instruction, identity,
         selection={"view": role, "page_role": role, "element_ids": [], "label": "Nouvelle page"},
-        brief=data.model_dump(), api_key=settings.openai_api_key, model=settings.openai_model,
+        brief=brief, api_key=settings.openai_api_key, model=settings.openai_model,
         timeout_seconds=settings.openai_timeout_seconds, page_instructions=SALES_PAGE_INSTRUCTIONS,
     )
     if result["region"] is not None:
         raise ValueError("Luna doit créer une page entière.")
     html, manifest = prepare_page(result["html"], require_form=False)
-    validate_sales_page(html, role)
+    validate_sales_page(html, has_next=has_next)
     if manifest:
         raise ValueError("Cette étape ne doit pas collecter de données personnelles.")
     return html, manifest
+
+
+LANDING_INSTRUCTION = ("Crée la première page du tunnel : une accroche forte qui présente le besoin, "
+                       "la promesse et les points forts vérifiés, puis invite à découvrir l'offre.")
 
 
 @router.get("/api/sales-funnels")
@@ -219,8 +270,13 @@ def create_sales_funnel(data: SalesTunnelCreate, db: Session = Depends(get_db), 
         raise HTTPException(503, "Configurez Luna pour créer un tunnel avec l'IA.")
     identity = brand_identity(user.company)
     try:
-        landing_html, landing_manifest = generate_step("landing", data, identity)
-        offer_html, offer_manifest = generate_step("offer", data, identity)
+        brief = data.model_dump()
+        landing_html, landing_manifest = generate_step(
+            brief, identity, role="landing", instruction=LANDING_INSTRUCTION, has_next=True)
+        offer_html, offer_manifest = generate_step(
+            brief, identity, role="offer", has_next=False,
+            instruction="Crée la page d'offre : explique concrètement l'offre, réponds aux objections "
+                        f"que le brief permet de traiter, puis termine par l'action « {data.goal_label} ».")
     except LunaAPIError as exc:
         raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
@@ -230,7 +286,7 @@ def create_sales_funnel(data: SalesTunnelCreate, db: Session = Depends(get_db), 
     db.add(campaign)
     db.flush()
     tunnel = Tunnel(campaign_id=campaign.id, name=data.name, slug=slugify(data.name),
-                    status="draft", kind="sales", brief=data.model_dump(), identity=identity,
+                    status="draft", kind="sales", brief=brief, identity=identity,
                     goal_url=data.goal_url, goal_label=data.goal_label)
     db.add(tunnel)
     db.flush()
@@ -282,7 +338,7 @@ def refine_sales_page(tunnel_id: str, page_id: str, data: SalesPageRefine,
         if not result["html"].strip():
             return {"message": result["message"], "changed": False, "tunnel": tunnel_payload(tunnel)}
         html, manifest = prepare_page(merge_page_region(current, result["html"], result["region"]), require_form=False)
-        validate_sales_page(html, page.role)
+        validate_sales_page(html, has_next=page.next_page_id is not None)
         if manifest:
             raise ValueError("La page doit garder son bouton d'action et ne pas contenir de formulaire.")
     except LunaAPIError as exc:
@@ -333,6 +389,96 @@ def discard_sales_page(tunnel_id: str, page_id: str, db: Session = Depends(get_d
     return tunnel_payload(tunnel)
 
 
+class SalesStepCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    instruction: str = Field(min_length=10, max_length=800)
+
+
+class SalesStepMove(BaseModel):
+    position: int = Field(ge=0, le=19)
+
+
+@router.post("/api/sales-funnels/{tunnel_id}/pages", status_code=201)
+def add_sales_step(tunnel_id: str, data: SalesStepCreate, db: Session = Depends(get_db),
+                   user: User = Depends(write_user)):
+    """Insère une étape avant la dernière, qui garde l'action finale."""
+    if not settings.openai_api_key:
+        raise HTTPException(503, "Configurez Luna pour ajouter une étape.")
+    tunnel = owned_tunnel(tunnel_id, db, user)
+    ordered = sorted(tunnel.pages, key=lambda page: page.position)
+    if len(ordered) >= MAX_STEPS:
+        raise HTTPException(422, f"Le tunnel est limité à {MAX_STEPS} étapes.")
+    try:
+        html, manifest = generate_step(
+            tunnel.brief or {}, tunnel.identity or {}, role="step", has_next=True,
+            instruction=f"Crée une étape intermédiaire du tunnel, placée avant la page d'offre. "
+                        f"{data.instruction}",
+        )
+    except LunaAPIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    page = Page(tunnel_id=tunnel.id, name=data.name.strip(), role="step",
+                position=len(ordered), html=html, manifest=manifest)
+    db.add(page)
+    db.flush()
+    relink(tunnel, [*ordered[:-1], page, ordered[-1]])
+    db.commit()
+    db.refresh(tunnel)
+    return {"tunnel": tunnel_payload(tunnel),
+            "warnings": action_warnings(sorted(tunnel.pages, key=lambda item: item.position))}
+
+
+@router.patch("/api/sales-funnels/{tunnel_id}/pages/{page_id}")
+def move_sales_step(tunnel_id: str, page_id: str, data: SalesStepMove,
+                    db: Session = Depends(get_db), user: User = Depends(write_user)):
+    """Déplace une étape. Le bouton d'une page peut ne plus convenir à sa
+    nouvelle place : on le signale au lieu de refuser, sinon réordonner serait
+    impraticable."""
+    tunnel = owned_tunnel(tunnel_id, db, user)
+    ordered = sorted(tunnel.pages, key=lambda page: page.position)
+    page = next((item for item in ordered if item.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Étape introuvable")
+    if data.position >= len(ordered):
+        raise HTTPException(422, "Cette place n'existe pas dans le parcours.")
+    ordered.remove(page)
+    ordered.insert(data.position, page)
+    relink(tunnel, ordered)
+    db.commit()
+    db.refresh(tunnel)
+    return {"tunnel": tunnel_payload(tunnel), "warnings": action_warnings(ordered)}
+
+
+@router.delete("/api/sales-funnels/{tunnel_id}/pages/{page_id}")
+def delete_sales_step(tunnel_id: str, page_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(write_user)):
+    """Retire une étape, et avec elle sa mesure.
+
+    Les événements portent une clé étrangère vers la page : les garder la
+    laisserait référencée. Supprimer une étape fait donc disparaître ses
+    chiffres, et la réponse dit combien.
+    """
+    tunnel = owned_tunnel(tunnel_id, db, user)
+    ordered = sorted(tunnel.pages, key=lambda page: page.position)
+    page = next((item for item in ordered if item.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Étape introuvable")
+    if len(ordered) <= 2:
+        raise HTTPException(422, "Un tunnel garde au moins deux étapes.")
+    measured = db.scalar(select(func.count(TunnelEvent.id)).where(TunnelEvent.page_id == page.id)) or 0
+    db.execute(TunnelEvent.__table__.delete().where(TunnelEvent.page_id == page.id))
+    ordered.remove(page)
+    relink(tunnel, ordered)
+    db.delete(page)
+    db.commit()
+    db.refresh(tunnel)
+    warnings = action_warnings(sorted(tunnel.pages, key=lambda item: item.position))
+    if measured:
+        warnings.append(f"{measured} mesures de cette étape ont été supprimées avec elle.")
+    return {"tunnel": tunnel_payload(tunnel), "warnings": warnings}
+
+
 @router.post("/api/sales-funnels/{tunnel_id}/publish")
 def publish_sales_funnel(tunnel_id: str, db: Session = Depends(get_db), user: User = Depends(write_user)):
     tunnel = owned_tunnel(tunnel_id, db, user)
@@ -361,19 +507,26 @@ def export_sales_funnel(tunnel_id: str, db: Session = Depends(get_db),
     if tunnel.status != "active":
         raise HTTPException(422, "Publiez le tunnel avant de l'exporter.")
     pages = sorted(tunnel.pages, key=lambda page: page.position)
-    if len(pages) != 2:
+    if not pages:
         raise HTTPException(422, "Ce parcours ne peut pas encore être exporté.")
-    destination = json.dumps(tunnel.goal_url).replace("<", "\\u003c")
-    script = ("<script>document.addEventListener('click',function(event){"
-              "if(event.target.closest('[data-sillage-next]')){location.href='offre.html'}"
-              f"if(event.target.closest('[data-sillage-goal]')){{location.href={destination}}}"
-              "})</script>")
+    # Noms prévisibles et sans collision : le nom d'une étape est libre et peut
+    # se répéter, sa place non.
+    names = ["index.html", *(f"etape-{index + 1}.html" for index in range(1, len(pages)))]
+    destination = json.dumps(tunnel.goal_url).replace("<", "\u003c")
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-        for page, filename in zip(pages, ("index.html", "offre.html"), strict=True):
+        for index, (page, filename) in enumerate(zip(pages, names, strict=True)):
+            # Le serveur n'est plus là : la chaîne réelle est recopiée en dur.
+            jumps = [f"if(event.target.closest('[data-sillage-goal]')){{location.href={destination}}}"]
+            if index + 1 < len(names):
+                following = json.dumps(names[index + 1])
+                jumps.insert(0, f"if(event.target.closest('[data-sillage-next]')){{location.href={following}}}")
+            script = "<script>document.addEventListener('click',function(event){" + "".join(jumps) + "})</script>"
             output.writestr(filename, page.html.replace("</body>", script + "</body>", 1))
+        sommaire = "\n".join(f"  {filename} - {page.name}" for page, filename in zip(pages, names, strict=True))
         output.writestr("LISEZ-MOI.txt", "Ce dossier contient une copie HTML du tunnel publié.\n"
-                        "Ouvrez index.html pour commencer. Le bouton final mène à l'adresse externe configurée.\n"
+                        "Ouvrez index.html pour commencer. Le bouton final mène à l'adresse externe configurée.\n\n"
+                        f"Les étapes, dans l'ordre :\n{sommaire}\n\n"
                         "Cette copie ne transmet aucune statistique à Sillage et ne suit pas les réservations ou ventes externes.\n")
     return Response(archive.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{tunnel.slug}.zip"'})
@@ -509,7 +662,7 @@ def sales_goal(slug: str, request: Request, db: Session = Depends(get_db)):
     tunnel = live_tunnel(slug, db)
     current = journey(request, tunnel)
     page = db.get(Page, current.get("page")) if current else None
-    if not page or page.tunnel_id != tunnel.id or page.next_page_id or not tunnel.goal_url or not current.get("sid"):
+    if not page or page.tunnel_id != tunnel.id or not tunnel.goal_url or not current.get("sid"):
         raise HTTPException(403, "Action inaccessible")
     record_event(db, tunnel, page, current["sid"], "goal_click", current.get("source") or "Lien direct")
     db.commit()
