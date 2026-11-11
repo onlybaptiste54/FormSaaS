@@ -445,3 +445,124 @@ def test_existing_sales_steps_are_given_an_address(tmp_path):
     assert adresses[0] == "decouverte"
     assert adresses[1] == "decouverte-2"
     assert adresses[2] != "go"
+
+
+def variante_de(client, tunnel_id, page_id, nom=""):
+    reponse = client.post(f"/api/sales-funnels/{tunnel_id}/pages/{page_id}/variants",
+                          json={"name": nom})
+    assert reponse.status_code == 201, reponse.text
+    page = next(item for item in reponse.json()["pages"] if item["id"] == page_id)
+    return page["variants"][-1]
+
+
+def test_a_variant_starts_as_a_copy_and_is_edited_on_its_own(client, monkeypatch):
+    """On compare deux rédactions du même propos, pas une page contre rien."""
+    from app import sales
+
+    tunnel = published_funnel(client, monkeypatch)
+    entree = tunnel["pages"][0]
+    variante = variante_de(client, tunnel["id"], entree["id"])
+    assert variante["name"] == "Version B"
+    assert "<h1>landing</h1>" in variante["html"]
+
+    # La retouche vise la version, pas l'étape.
+    monkeypatch.setattr(sales.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(sales, "revise_page", fake_page)
+    retouche = client.post(f"/api/sales-funnels/{tunnel['id']}/pages/{entree['id']}/refine",
+                           json={"instruction": "Rends le titre plus direct.", "variant_id": variante["id"]})
+    assert retouche.status_code == 200, retouche.text
+    apres = next(item for item in retouche.json()["tunnel"]["pages"] if item["id"] == entree["id"])
+    assert "modifié" in apres["variants"][0]["html"]
+    # L'étape témoin n'a pas bougé.
+    assert "modifié" not in apres["html"]
+
+
+def test_a_session_always_sees_the_same_version(client, monkeypatch):
+    """Voir A puis B ne mesurerait rien : le tirage est figé dans le cookie."""
+    tunnel = published_funnel(client, monkeypatch)
+    entree = tunnel["pages"][0]
+    variante_de(client, tunnel["id"], entree["id"])
+    assert client.post(f"/api/sales-funnels/{tunnel['id']}/publish").status_code == 200
+
+    slug = tunnel["slug"]
+    client.cookies.delete("sillage_sales_journey")
+    premier = client.get(f"/api/public/sales/{slug}/document").text
+    for _ in range(6):
+        assert client.get(f"/api/public/sales/{slug}/document").text == premier
+    client.cookies.delete("sillage_sales_journey")
+
+
+def test_both_versions_are_served_across_sessions(client, monkeypatch):
+    """Sur plusieurs sessions, les deux versions sortent."""
+    from app import sales
+
+    tunnel = published_funnel(client, monkeypatch)
+    entree = tunnel["pages"][0]
+    variante = variante_de(client, tunnel["id"], entree["id"])
+    assert client.post(f"/api/sales-funnels/{tunnel['id']}/publish").status_code == 200
+
+    tirages = iter(["", variante["id"], "", variante["id"]])
+    def tirage(options):
+        voulu = next(tirages)
+        return voulu if voulu in options else options[0]
+    monkeypatch.setattr(sales.random, "choice", tirage)
+    for _ in range(4):
+        client.cookies.delete("sillage_sales_journey")
+        assert client.get(f"/api/public/sales/{tunnel['slug']}/document").status_code == 200
+    client.cookies.delete("sillage_sales_journey")
+
+    chiffres = client.get(f"/api/sales-funnels/{tunnel['id']}/stats").json()
+    versions = next(page for page in chiffres["pages"] if page["id"] == entree["id"])["variants"]
+    assert [item["name"] for item in versions] == ["Version A (témoin)", "Version B"]
+    assert [item["visits"] for item in versions] == [2, 2]
+
+
+def test_the_final_click_is_credited_to_the_version_seen(client, monkeypatch):
+    """Le clic final arrive plus loin : il remonte à la version vue à l'entrée."""
+    from app import sales
+
+    tunnel = published_funnel(client, monkeypatch)
+    entree, offre = tunnel["pages"][0], tunnel["pages"][1]
+    variante = variante_de(client, tunnel["id"], entree["id"])
+    assert client.post(f"/api/sales-funnels/{tunnel['id']}/publish").status_code == 200
+    slug = tunnel["slug"]
+
+    for choisi in (variante["id"], ""):
+        monkeypatch.setattr(sales.random, "choice",
+                            lambda options, valeur=choisi: valeur if valeur in options else options[0])
+        client.cookies.delete("sillage_sales_journey")
+        assert client.get(f"/api/public/sales/{slug}/document").status_code == 200
+        assert client.get(f"/api/public/sales/{slug}/document", params={"step": offre["slug"]}).status_code == 200
+        if choisi:
+            assert client.get(f"/api/public/sales/{slug}/go", follow_redirects=False).status_code == 303
+    client.cookies.delete("sillage_sales_journey")
+
+    versions = next(page for page in client.get(f"/api/sales-funnels/{tunnel['id']}/stats").json()["pages"]
+                    if page["id"] == entree["id"])["variants"]
+    temoin = next(item for item in versions if item["id"] == "")
+    comparee = next(item for item in versions if item["id"] == variante["id"])
+    assert comparee["goals"] == 1 and comparee["conversion"] == 100.0
+    assert temoin["goals"] == 0 and temoin["conversion"] == 0.0
+
+
+def test_promoting_a_version_ends_the_comparison(client, monkeypatch):
+    """La version retenue devient l'étape, et on peut revenir en arrière."""
+    from app import sales
+
+    tunnel = published_funnel(client, monkeypatch)
+    entree = tunnel["pages"][0]
+    variante = variante_de(client, tunnel["id"], entree["id"])
+    monkeypatch.setattr(sales.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(sales, "revise_page", fake_page)
+    client.post(f"/api/sales-funnels/{tunnel['id']}/pages/{entree['id']}/refine",
+                json={"instruction": "Rends le titre plus direct.", "variant_id": variante["id"]})
+    assert client.post(f"/api/sales-funnels/{tunnel['id']}/publish").status_code == 200
+
+    promue = client.post(f"/api/sales-funnels/{tunnel['id']}/pages/{entree['id']}/variants/{variante['id']}/promote")
+    assert promue.status_code == 200, promue.text
+    apres = next(item for item in promue.json()["tunnel"]["pages"] if item["id"] == entree["id"])
+    assert "modifié" in apres["html"]
+    assert apres["variants"] == []
+    # Le document precedent reste restaurable.
+    versions = client.get(f"/api/sales-funnels/{tunnel['id']}/pages/{entree['id']}/versions").json()
+    assert len(versions) >= 1

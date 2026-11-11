@@ -35,6 +35,7 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
   const [stepName, setStepName] = useState("");
   const [stepBrief, setStepBrief] = useState("");
   const [adding, setAdding] = useState(false);
+  const [variantId, setVariantId] = useState("");
   const [seoTitle, setSeoTitle] = useState("");
   const [seoDescription, setSeoDescription] = useState("");
 
@@ -44,6 +45,7 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
   useEffect(() => { if (selectedId) void api<Version[]>(`/sales-funnels/${id}/pages/${selectedId}/versions`).then(setVersions).catch(() => setVersions([])); }, [id, selectedId, tunnel?.status]);
 
   const page = tunnel?.pages.find(item => item.id === selectedId) || tunnel?.pages[0];
+  const shown = variantId ? page?.variants.find(item => item.id === variantId) : undefined;
   const hasDrafts = tunnel?.pages.some(item => item.has_draft);
 
   async function changeSteps(path: string, init: RequestInit, done: string) {
@@ -76,12 +78,37 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
     void changeSteps(`/pages/${item.id}`, { method: "DELETE" }, `« ${item.name} » a été supprimée.`);
   }
 
+  async function addVariant(item: SalesPage) {
+    if (busy) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const result = await api<SalesTunnel>(`/sales-funnels/${id}/pages/${item.id}/variants`, { method: "POST", body: JSON.stringify({ name: "" }) });
+      setTunnel(result);
+      const ajoutee = result.pages.find(entry => entry.id === item.id)?.variants.at(-1);
+      setVariantId(ajoutee?.id || "");
+      setMessage("La version est une copie de l’étape. Retouchez-la, puis publiez pour la mettre en comparaison.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Version impossible à créer."); }
+    finally { setBusy(false); }
+  }
+
+  async function removeVariant(item: SalesPage, versionId: string) {
+    if (busy || !window.confirm("Retirer cette version ? Ses mesures seront perdues.")) return;
+    await changeSteps(`/pages/${item.id}/variants/${versionId}`, { method: "DELETE" }, "La version a été retirée.");
+    setVariantId("");
+  }
+
+  async function promoteVariant(pageId: string, versionId: string) {
+    if (busy || !window.confirm("Retenir cette version ? Elle remplace l’étape et la comparaison s’arrête.")) return;
+    await changeSteps(`/pages/${pageId}/variants/${versionId}/promote`, { method: "POST" }, "La version retenue remplace l’étape.");
+    setVariantId("");
+  }
+
   async function refine(event: FormEvent) {
     event.preventDefault();
     if (!page || instruction.trim().length < 3 || busy) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      const result = await api<{ message: string; changed: boolean; tunnel: SalesTunnel }>(`/sales-funnels/${id}/pages/${page.id}/refine`, { method: "POST", body: JSON.stringify({ instruction: instruction.trim() }) });
+      const result = await api<{ message: string; changed: boolean; tunnel: SalesTunnel }>(`/sales-funnels/${id}/pages/${page.id}/refine`, { method: "POST", body: JSON.stringify({ instruction: instruction.trim(), variant_id: variantId }) });
       setTunnel(result.tunnel); setMessage(result.message); setInstruction("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Luna n’a pas pu modifier la page."); }
     finally { setBusy(false); }
@@ -153,7 +180,7 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
     {error && <p className="form-error" role="alert">{error}</p>}{message && <p className="sales-feedback" role="status">{message}</p>}
     {warnings.length > 0 && <div className="sales-warnings" role="status"><strong>À retoucher avec Luna</strong>{warnings.map(item => <span key={item}>{item}</span>)}</div>}
     {tab === "pages" && <div className="sales-studio"><aside className="panel sales-step-panel"><h2>Votre parcours</h2><p>Vérifiez chaque page avant de publier.</p>{tunnel.pages.map((item, index) => <div className="sales-step-row" key={item.id}>
-      <button type="button" className={`sales-step-select${page?.id === item.id ? " selected" : ""}`} aria-current={page?.id === item.id ? "step" : undefined} onClick={() => { setSelectedId(item.id); setMessage(""); }}><b>{index + 1}</b><span><strong>{item.name}</strong><small>{ROLE_HINTS[item.role] || "Étape"}{item.has_draft ? " · Brouillon à publier" : ""}</small></span></button>
+      <button type="button" className={`sales-step-select${page?.id === item.id ? " selected" : ""}`} aria-current={page?.id === item.id ? "step" : undefined} onClick={() => { setSelectedId(item.id); setVariantId(""); setMessage(""); }}><b>{index + 1}</b><span><strong>{item.name}</strong><small>{ROLE_HINTS[item.role] || "Étape"}{item.has_draft ? " · Brouillon à publier" : ""}</small></span></button>
       <div className="tunnel-page-order">
         <button type="button" aria-label={`Monter ${item.name}`} title="Monter" disabled={busy || index === 0} onClick={() => moveStep(item, index - 1)}><ArrowUp size={15}/></button>
         <button type="button" aria-label={`Descendre ${item.name}`} title="Descendre" disabled={busy || index === tunnel.pages.length - 1} onClick={() => moveStep(item, index + 1)}><ArrowDown size={15}/></button>
@@ -170,7 +197,14 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
           </div>
         </form>
       : <button type="button" className="sales-step-new" disabled={busy || tunnel.pages.length >= 20} onClick={() => setAdding(true)}><Plus size={15}/>Ajouter une étape</button>}<div className="sales-step-goal"><Check size={17}/><span><strong>{tunnel.goal_label}</strong><small>Lien externe mesuré</small></span></div><div className="sales-checklist"><strong>Avant la mise en ligne</strong><span><Check size={14}/> Relisez les prix et les affirmations</span><span><Check size={14}/> Testez le bouton final</span><span><Check size={14}/> Vérifiez l’affichage mobile</span></div></aside>
-      <section className="sales-preview-panel"><div className="sales-preview-head"><div><h2>{page?.name}</h2><small>{page?.has_draft ? "Aperçu du brouillon" : "Aperçu de la version publiée"}</small></div><div className="sales-preview-tools"><button className={device === "desktop" ? "selected" : ""} onClick={() => setDevice("desktop")}>Ordinateur</button><button className={device === "mobile" ? "selected" : ""} onClick={() => setDevice("mobile")}>Mobile</button><span>{page?.visits || 0} visites</span></div></div>{page && <div className={`sales-device sales-device-${device}`}><PageFrame html={page.html} title={`Aperçu de ${page.name}`} mode="edit"/></div>}</section>
+      <section className="sales-preview-panel"><div className="sales-preview-head"><div><h2>{page?.name}</h2><small>{(shown?.has_draft ?? page?.has_draft) ? "Aperçu du brouillon" : "Aperçu de la version publiée"}</small></div><div className="sales-preview-tools"><button className={device === "desktop" ? "selected" : ""} onClick={() => setDevice("desktop")}>Ordinateur</button><button className={device === "mobile" ? "selected" : ""} onClick={() => setDevice("mobile")}>Mobile</button><span>{page?.visits || 0} visites</span></div></div>
+        {page && <div className="sales-variant-bar">
+          <button type="button" className={variantId === "" ? "selected" : ""} onClick={() => setVariantId("")}>Version A{page.variants.length > 0 ? " (témoin)" : ""}</button>
+          {page.variants.map(item => <button key={item.id} type="button" className={variantId === item.id ? "selected" : ""} onClick={() => setVariantId(item.id)}>{item.name}</button>)}
+          {page.variants.length < 3 && <button type="button" className="sales-variant-add" disabled={busy} onClick={() => void addVariant(page)}><Plus size={14}/>Comparer une version</button>}
+          {variantId && <button type="button" className="sales-discard" disabled={busy} onClick={() => void removeVariant(page, variantId)}>Retirer cette version</button>}
+        </div>}
+        {page && <div className={`sales-device sales-device-${device}`}><PageFrame html={shown?.html ?? page.html} title={`Aperçu de ${page.name}`} mode="edit"/></div>}</section>
       <aside className="panel sales-ai-panel"><div className="sales-ai-head"><Sparkles size={20}/><h2>Retoucher avec Luna</h2></div><p>Décrivez un changement précis : « agrandis le titre », « rends l’offre plus claire », « utilise une couleur plus vive ».</p><form onSubmit={event => void refine(event)}><textarea value={instruction} maxLength={800} placeholder="Que souhaitez-vous changer sur cette page ?" onChange={event => setInstruction(event.target.value)} disabled={busy}/><button className="button button-primary" disabled={busy || instruction.trim().length < 3}>{busy ? <LoaderCircle className="spin" size={16}/> : <Sparkles size={16}/>} {busy ? "Luna travaille…" : "Appliquer"}</button></form>{page?.has_draft && <button className="sales-discard" disabled={busy} onClick={async () => { setTunnel(await api<SalesTunnel>(`/sales-funnels/${id}/pages/${page.id}/discard`, { method: "POST" })); setMessage("Brouillon abandonné."); }}>Abandonner les retouches</button>}{versions.length > 0 && <div className="sales-versions"><strong>Versions précédentes</strong>{versions.slice(0, 5).map(version => <button key={version.id} disabled={busy} onClick={() => void restore(version.id)}><Undo2 size={14}/>{new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(new Date(version.created_at))}</button>)}</div>}</aside>
     </div>}
     {tab === "pages" && <form className="panel sales-destination-form" onSubmit={event => void saveDestination(event)}><div><h2>Destination du bouton final</h2><p>{tunnel.goal_label} · Le clic est mesuré dans Sillage.</p></div><label>Adresse HTTPS<input type="url" required pattern="https://.*" maxLength={2048} value={destination} onChange={event => setDestination(event.target.value)}/></label><button className="button button-secondary" disabled={busy || destination.trim() === tunnel.goal_url}>Enregistrer le lien</button></form>}
@@ -185,7 +219,7 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
       {!stats ? <Loading/> : <>
         <section className="metric-grid metric-grid-3"><article className="metric-card"><p>Entrées dans le tunnel</p><strong>{stats.visits}</strong><span>Parcours distincts</span></article><article className="metric-card"><p>Clics vers l’action finale</p><strong>{stats.goals}</strong><span>{tunnel.goal_label}</span></article><article className="metric-card"><p>Taux de passage</p><strong>{stats.conversion} %</strong><span>Entrée → clic final</span></article></section>
         <article className="panel sales-trend"><h2>Activité du tunnel</h2><div className="sales-trend-bars">{stats.daily.map(day => { const max = Math.max(...stats.daily.map(item => item.visits), 1); return <div key={day.date} title={`${day.date} · ${day.visits} entrées · ${day.goals} clics finaux`}><span style={{ height: `${Math.max(3, day.visits / max * 100)}%` }}/><i style={{ height: `${Math.max(3, day.goals / max * 100)}%` }}/></div>; })}</div><p>Vert : entrées · Orange : clics finaux</p></article>
-        <div className="sales-stats-grid"><article className="panel"><h2>Passage par étape</h2>{stats.pages.map((item, index) => <div className="sales-stat-row" key={item.id}><span>{index + 1}. {item.name}</span><strong>{item.visits} vues</strong><small>{item.continuation === null ? `${item.actions} clics finaux` : `${item.continuation} % poursuivent`}</small></div>)}</article><article className="panel"><h2>Sources de visite</h2>{stats.sources.length ? stats.sources.map(item => <div className="sales-stat-row" key={item.source}><span>{item.source}</span><strong>{item.visits} entrées</strong><small>{item.goals} clics finaux</small></div>) : <p className="muted">Les sources apparaîtront après les premières visites.</p>}</article></div>
+        <div className="sales-stats-grid"><article className="panel"><h2>Passage par étape</h2>{stats.pages.map((item, index) => <div key={item.id}><div className="sales-stat-row"><span>{index + 1}. {item.name}</span><strong>{item.visits} vues</strong><small>{item.continuation === null ? `${item.actions} clics finaux` : `${item.continuation} % poursuivent`}</small></div>{item.variants.length > 0 && <div className="sales-variant-rows">{item.variants.map(version => <div key={version.id || "temoin"}><span>{version.name}</span><strong>{version.visits} vues</strong><small>{version.conversion === null ? "pas encore de visite" : `${version.conversion} % vont au bout`}</small>{version.id ? <button type="button" disabled={busy} onClick={() => void promoteVariant(item.id, version.id)}>Retenir</button> : <em>en place</em>}</div>)}</div>}</div>)}</article><article className="panel"><h2>Sources de visite</h2>{stats.sources.length ? stats.sources.map(item => <div className="sales-stat-row" key={item.source}><span>{item.source}</span><strong>{item.visits} entrées</strong><small>{item.goals} clics finaux</small></div>) : <p className="muted">Les sources apparaîtront après les premières visites.</p>}</article></div>
         <p className="sales-stats-note">Le clic final indique une intention. Il ne confirme ni une réservation ni une vente sur le site de destination.</p>
       </>}
     </div>}

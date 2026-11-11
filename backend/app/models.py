@@ -179,6 +179,7 @@ class Page(Base):
     form: Mapped[Form | None] = relationship(back_populates="pages", foreign_keys=[form_id])
     tunnel: Mapped[Tunnel | None] = relationship(back_populates="pages", foreign_keys=[tunnel_id])
     versions: Mapped[list["PageVersion"]] = relationship(back_populates="page", cascade="all, delete-orphan", order_by="PageVersion.created_at")
+    variants: Mapped[list["PageVariant"]] = relationship(back_populates="page", cascade="all, delete-orphan", order_by="PageVariant.created_at")
 
 
 class PageVersion(Base):
@@ -194,6 +195,26 @@ class PageVersion(Base):
     page: Mapped[Page] = relationship(back_populates="versions")
 
 
+class PageVariant(Base):
+    """Une autre version d'une etape, comparee a l'originale par la conversion.
+
+    L'etape garde son propre document : c'est la version temoin. Une variante
+    n'est qu'un second document pour la meme place dans le parcours, ce qui
+    laisse intacts l'ordre, la chaine, l'export et l'editeur.
+    """
+
+    __tablename__ = "page_variants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    page_id: Mapped[str] = mapped_column(ForeignKey("pages.id"), index=True)
+    name: Mapped[str] = mapped_column(String(60))
+    html: Mapped[str] = mapped_column(Text)
+    draft_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    page: Mapped["Page"] = relationship(back_populates="variants")
+
+
 class TunnelEvent(Base):
     """One event per journey, step and action, with a stable deduplication key."""
 
@@ -206,6 +227,9 @@ class TunnelEvent(Base):
     session_id: Mapped[str] = mapped_column(String(36), index=True)
     event_key: Mapped[str] = mapped_column(String(160))
     kind: Mapped[str] = mapped_column(String(30))
+    # La version vue, vide pour le temoin. Sans cle etrangere : la mesure
+    # survit a la variante qu'elle decrit.
+    variant_id: Mapped[str] = mapped_column(String(36), default="")
     source: Mapped[str] = mapped_column(String(80), default="Lien direct")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
