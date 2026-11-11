@@ -37,6 +37,7 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Pages générées par Luna avec le profil de marque, aperçu ordinateur/mobile, retouches en langage naturel, brouillons et versions précédentes
 - Parcours de deux à vingt étapes : ajout d'une étape décrite en une phrase, réordonnancement, suppression. L'étape qui en précède une autre porte le bouton de passage, la dernière le bouton d'action finale, et l'interface signale une page dont le bouton ne correspond plus à sa place
 - Publication par lien, mise en pause, correction du lien final et export HTML ZIP du tunnel publié, une page par étape avec la chaîne recopiée en dur
+- Référencement : titre et description par tunnel, repli sur le nom et l'offre, rendus par le serveur dans le `<head>` de la page publique avec les balises Open Graph et le lien canonique, plus `robots.txt` et `sitemap.xml` alimentés par les tunnels en ligne
 - Statistiques par tunnel et par période : entrées, passage entre pages, clics finaux, évolution quotidienne et sources (`?source=` ou `?utm_source=`)
 - Mesure de parcours sans donnée personnelle : ni adresse IP ni user-agent enregistrés, événements dédupliqués par session et par étape, et oubliés au-delà de treize mois
 - Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.
@@ -85,6 +86,7 @@ Variables principales :
 | Variable | Valeur locale par défaut |
 | --- | --- |
 | `ENVIRONMENT` | `development` |
+| `SITE_URL` | `http://localhost:3000` |
 | `WEB_PORT` | `3000` |
 | `API_PORT` | `8000` |
 | `POSTGRES_DB` | `sillage` |
