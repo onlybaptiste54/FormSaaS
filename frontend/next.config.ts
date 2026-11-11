@@ -18,6 +18,20 @@ const publicPageCsp = [
   "form-action 'self'",
 ].join("; ");
 
+// Le tunnel de vente est servi comme document entier, sans coquille d'app :
+// il n'execute aucun script, et sa politique le dit aussi dans l'en-tete.
+const documentCsp = [
+  "default-src 'none'",
+  "script-src 'none'",
+  "style-src 'unsafe-inline'",
+  "img-src 'self' https: data:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+  "connect-src 'none'",
+  "form-action 'self'",
+].join("; ");
+
 const nextConfig: NextConfig = {
   output: "standalone",
   reactStrictMode: true,
@@ -27,7 +41,10 @@ const nextConfig: NextConfig = {
     return [{ source: "/media/brand", destination: `${apiInternalOrigin}/api/brand/image` }];
   },
   async headers() {
-    return ["/forms/:slug", "/t/:slug"].map(source => ({ source, headers: [{ key: "Content-Security-Policy", value: publicPageCsp }] }));
+    return [
+      { source: "/forms/:slug", headers: [{ key: "Content-Security-Policy", value: publicPageCsp }] },
+      { source: "/t/:path*", headers: [{ key: "Content-Security-Policy", value: documentCsp }] },
+    ];
   },
 };
 

@@ -52,27 +52,42 @@ def test_guided_funnel_publication_and_measured_journey(client, monkeypatch):
     assert tunnel["status"] == "draft"
     assert [page["role"] for page in tunnel["pages"]] == ["landing", "offer"]
     slug = tunnel["slug"]
-    assert client.post(f"/api/public/sales/{slug}/visit", json={"source": "Email"}).status_code == 404
+    assert client.get(f"/api/public/sales/{slug}/document").status_code == 404
 
     published = client.post(f"/api/sales-funnels/{tunnel['id']}/publish")
     assert published.status_code == 200
-    first = client.post(f"/api/public/sales/{slug}/visit", json={"source": "Email"})
+
+    # Le document est la page elle-meme, pas une enveloppe autour d'elle.
+    first = client.get(f"/api/public/sales/{slug}/document", params={"source": "Email"})
     assert first.status_code == 200, first.text
-    assert first.json()["role"] == "landing"
-    assert client.post(f"/api/public/sales/{slug}/visit", json={"source": "Réseaux sociaux"}).json()["role"] == "landing"
-    second = client.post(f"/api/public/sales/{slug}/advance")
+    assert first.headers["content-type"].startswith("text/html")
+    assert first.text.startswith("<!doctype html>")
+    assert "<h1>landing</h1>" in first.text
+    assert "<title>" in first.text and tunnel["name"] in first.text
+    # Le bouton reste un bouton : le CSS de Luna continue de s'appliquer.
+    assert '<form action="/t/' + slug + '/2" method="get" style="display:contents">' in first.text
+    assert "<button" in first.text and 'type="submit"' in first.text
+
+    client.get(f"/api/public/sales/{slug}/document", params={"source": "Réseaux sociaux"})
+    second = client.get(f"/api/public/sales/{slug}/document", params={"step": 2})
     assert second.status_code == 200
-    assert second.json()["role"] == "offer"
-    goal = client.post(f"/api/public/sales/{slug}/goal")
-    assert goal.status_code == 200
-    assert goal.json()["url"] == brief()["goal_url"]
-    assert client.post(f"/api/public/sales/{slug}/goal").status_code == 200
+    assert "<h1>offer</h1>" in second.text
+    # Derniere etape : plus de passage, seulement l'action finale.
+    assert f'/t/{slug}/go' in second.text
+    assert f'/t/{slug}/3' not in second.text
+
+    goal = client.get(f"/api/public/sales/{slug}/go", follow_redirects=False)
+    assert goal.status_code == 303
+    assert goal.headers["location"] == brief()["goal_url"]
+    assert client.get(f"/api/public/sales/{slug}/go", follow_redirects=False).status_code == 303
     stats = client.get(f"/api/sales-funnels/{tunnel['id']}/stats").json()
     assert stats["visits"] == 1
     assert stats["goals"] == 1
     assert stats["conversion"] == 100.0
     assert stats["sources"] == [{"source": "Email", "visits": 1, "goals": 1}]
     assert [page["visits"] for page in stats["pages"]] == [1, 1]
+    # Arriver sur l'etape suivante vaut clic sur le bouton de la precedente.
+    assert stats["pages"][0]["actions"] == 1
     assert stats["daily"][-1]["visits"] == 1
     overview = client.get("/api/sales-funnels/overview").json()
     assert overview["active"] >= 1
@@ -81,7 +96,7 @@ def test_guided_funnel_publication_and_measured_journey(client, monkeypatch):
     updated = client.patch(f"/api/sales-funnels/{tunnel['id']}/destination",
                            json={"goal_url": "https://example.com/nouveau"})
     assert updated.status_code == 200
-    assert client.post(f"/api/public/sales/{slug}/goal").json()["url"] == "https://example.com/nouveau"
+    assert client.get(f"/api/public/sales/{slug}/go", follow_redirects=False).headers["location"] == "https://example.com/nouveau"
     assert client.patch(f"/api/sales-funnels/{tunnel['id']}/destination",
                         json={"goal_url": "http://example.com"}).status_code == 422
     exported = client.get(f"/api/sales-funnels/{tunnel['id']}/export.zip")
@@ -105,15 +120,15 @@ def test_refine_keeps_public_page_until_publish_and_can_restore(client, monkeypa
     assert refined.status_code == 200, refined.text
     assert refined.json()["changed"] is True
     assert refined.json()["tunnel"]["pages"][0]["has_draft"] is True
-    assert "modifié" not in client.post(f"/api/public/sales/{tunnel['slug']}/visit", json={}).json()["html"]
+    assert "modifié" not in client.get(f"/api/public/sales/{tunnel['slug']}/document").text
     client.post(f"/api/sales-funnels/{tunnel_id}/publish")
-    assert "modifié" in client.post(f"/api/public/sales/{tunnel['slug']}/visit", json={}).json()["html"]
+    assert "modifié" in client.get(f"/api/public/sales/{tunnel['slug']}/document").text
     versions = client.get(f"/api/sales-funnels/{tunnel_id}/pages/{page_id}/versions").json()
     assert len(versions) == 1
     restored = client.post(f"/api/sales-funnels/{tunnel_id}/pages/{page_id}/versions/{versions[0]['id']}/restore")
     assert restored.status_code == 200
     assert "modifié" not in restored.json()["pages"][0]["html"]
-    assert "modifié" in client.post(f"/api/public/sales/{tunnel['slug']}/visit", json={}).json()["html"]
+    assert "modifié" in client.get(f"/api/public/sales/{tunnel['slug']}/document").text
 
 
 def test_guidance_rejects_missing_destination_and_unverified_action(client, monkeypatch):
@@ -177,14 +192,13 @@ def test_the_public_journey_is_capped(client, monkeypatch):
 
     monkeypatch.setattr(sales, "JOURNEY_CALLS", 3)
     for attempt in range(3):
-        refused = client.post("/api/public/sales/slug-inconnu/visit", json={"source": "Email"})
+        refused = client.get("/api/public/sales/slug-inconnu/document")
         assert refused.status_code == 404, f"appel {attempt}"
-    blocked = client.post("/api/public/sales/slug-inconnu/visit", json={"source": "Email"})
+    blocked = client.get("/api/public/sales/slug-inconnu/document")
     assert blocked.status_code == 429
     assert int(blocked.headers["Retry-After"]) > 0
-    # Le seau est partage : /advance et /goal sont bloques aussi.
-    assert client.post("/api/public/sales/slug-inconnu/advance").status_code == 429
-    assert client.post("/api/public/sales/slug-inconnu/goal").status_code == 429
+    # Le seau est partage : l'action finale est bloquee aussi.
+    assert client.get("/api/public/sales/slug-inconnu/go").status_code == 429
 
 
 def test_a_journey_cookie_without_a_session_is_refused(client, monkeypatch):
@@ -203,8 +217,7 @@ def test_a_journey_cookie_without_a_session_is_refused(client, monkeypatch):
                        sales.settings.secret_key, algorithm="HS256")
     client.cookies.set("sillage_sales_journey", token)
     try:
-        assert client.post(f"/api/public/sales/{tunnel['slug']}/advance").status_code == 403
-        assert client.post(f"/api/public/sales/{tunnel['slug']}/goal").status_code == 403
+        assert client.get(f"/api/public/sales/{tunnel['slug']}/go").status_code == 403
     finally:
         client.cookies.delete("sillage_sales_journey")
 
@@ -291,10 +304,10 @@ def test_the_final_action_works_from_any_step(client, monkeypatch):
     """Un visiteur convaincu dès la première étape doit pouvoir partir."""
     tunnel = published_funnel(client, monkeypatch)
     slug = tunnel["slug"]
-    assert client.post(f"/api/public/sales/{slug}/visit", json={"source": "Email"}).status_code == 200
-    goal = client.post(f"/api/public/sales/{slug}/goal")
-    assert goal.status_code == 200, goal.text
-    assert goal.json()["url"] == "https://example.com/reserver"
+    assert client.get(f"/api/public/sales/{slug}/document", params={"source": "Email"}).status_code == 200
+    goal = client.get(f"/api/public/sales/{slug}/go", follow_redirects=False)
+    assert goal.status_code == 303, goal.text
+    assert goal.headers["location"] == "https://example.com/reserver"
     client.cookies.delete("sillage_sales_journey")
 
 

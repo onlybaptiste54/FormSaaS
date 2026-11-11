@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -19,7 +20,7 @@ from .config import settings
 from .database import get_db
 from .luna import LunaAPIError, merge_page_region, revise_page, slugify
 from .models import Campaign, Company, Page, PageVersion, Tunnel, TunnelEvent, User
-from .page_document import prepare_page, render_page, same_document
+from .page_document import prepare_page, public_document, render_page, same_document
 from .security import client_ip, current_user, rate_limit, write_user
 
 
@@ -95,10 +96,6 @@ class SalesDestinationUpdate(BaseModel):
     @classmethod
     def https_url(cls, value: str) -> str:
         return SalesTunnelCreate.https_url(SalesTunnelCreate.required_destination(value.strip()))
-
-
-class SalesJourneyStart(BaseModel):
-    source: str = Field(default="Lien direct", max_length=80)
 
 
 def owned_tunnel(tunnel_id: str, db: Session, user: User) -> Tunnel:
@@ -656,7 +653,7 @@ def set_journey(response: Response, request: Request, payload: dict) -> None:
     token = jwt.encode({**payload, "exp": datetime.now(timezone.utc) + timedelta(hours=24)},
                        settings.secret_key, algorithm="HS256")
     response.set_cookie("sillage_sales_journey", token, max_age=86400, httponly=True,
-                        secure=request.url.scheme == "https", samesite="lax", path="/api/public/sales")
+                        secure=request.url.scheme == "https", samesite="lax", path="/")
 
 
 def record_event(db: Session, tunnel: Tunnel, page: Page, sid: str, kind: str, source: str) -> bool:
@@ -678,48 +675,56 @@ def record_event(db: Session, tunnel: Tunnel, page: Page, sid: str, kind: str, s
     return inserted
 
 
-def public_page(page: Page) -> dict:
-    return {"page_id": page.id, "name": page.name, "role": page.role,
-            "next_page_id": page.next_page_id, "html": render_page(page.html, "")}
+def step_path(tunnel: Tunnel, index: int) -> str:
+    """L'adresse publique d'une etape. La premiere est la racine du tunnel."""
+    return f"/t/{tunnel.slug}" if index == 0 else f"/t/{tunnel.slug}/{index + 1}"
 
 
-@router.post("/api/public/sales/{slug}/visit")
-def visit_sales_funnel(slug: str, data: SalesJourneyStart, request: Request, response: Response,
-                       db: Session = Depends(get_db)):
-    rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
-    tunnel = live_tunnel(slug, db)
-    previous = journey(request, tunnel)
-    sid = previous.get("sid") if previous else str(uuid4())
-    source = previous.get("source") if previous else data.source.strip()[:80] or "Lien direct"
-    page = db.get(Page, previous.get("page")) if previous else None
-    if not page or page.tunnel_id != tunnel.id:
-        page = db.get(Page, tunnel.entry_page_id)
+def document_for(db: Session, tunnel: Tunnel, index: int, request: Request,
+                 response: Response, source: str) -> str:
+    """Rend une etape et enregistre le passage.
+
+    Arriver ici depuis l'etape precedente vaut clic sur son bouton : sans page
+    parente pour l'intercepter, c'est la navigation elle-meme qui le dit.
+    """
+    pages = sorted(tunnel.pages, key=lambda item: item.position)
+    if index < 0 or index >= len(pages):
+        raise HTTPException(404, "Étape introuvable")
+    page = pages[index]
+    precedent = journey(request, tunnel)
+    sid = precedent.get("sid") if precedent and precedent.get("sid") else str(uuid4())
+    source = (precedent.get("source") if precedent else None) or source
+    if precedent and index > 0:
+        venant = next((item for item in pages if item.id == precedent.get("page")), None)
+        if venant and venant.next_page_id == page.id:
+            record_event(db, tunnel, venant, sid, "step_click", source)
     record_event(db, tunnel, page, sid, "page_view", source)
     db.commit()
     set_journey(response, request, {"tunnel": tunnel.id, "sid": sid, "page": page.id, "source": source})
-    return public_page(page)
+    reference = tunnel_seo(tunnel)
+    return public_document(
+        page.html,
+        title=reference["title"], description=reference["description"],
+        canonical=f"{settings.site_url}{step_path(tunnel, index)}",
+        next_url=step_path(tunnel, index + 1) if page.next_page_id else None,
+        goal_url=f"/t/{tunnel.slug}/go" if tunnel.goal_url else None,
+    )
 
 
-@router.post("/api/public/sales/{slug}/advance")
-def advance_sales_funnel(slug: str, request: Request, response: Response, db: Session = Depends(get_db)):
+@router.get("/api/public/sales/{slug}/document", response_class=HTMLResponse)
+def sales_document(slug: str, request: Request, response: Response, step: int = Query(default=1, ge=1, le=20),
+                   source: str = Query(default="Lien direct", max_length=80), db: Session = Depends(get_db)):
+    """Le document d'une etape, servi tel quel : c'est la page que lit le visiteur."""
     rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
     tunnel = live_tunnel(slug, db)
-    current = journey(request, tunnel)
-    page = db.get(Page, current.get("page")) if current else None
-    if not page or page.tunnel_id != tunnel.id or not page.next_page_id or not current.get("sid"):
-        raise HTTPException(403, "Étape inaccessible")
-    next_page = db.get(Page, page.next_page_id)
-    if not next_page or next_page.tunnel_id != tunnel.id:
-        raise HTTPException(422, "Parcours invalide")
-    record_event(db, tunnel, page, current["sid"], "step_click", current.get("source") or "Lien direct")
-    record_event(db, tunnel, next_page, current["sid"], "page_view", current.get("source") or "Lien direct")
-    db.commit()
-    set_journey(response, request, {**current, "page": next_page.id})
-    return public_page(next_page)
+    html = document_for(db, tunnel, step - 1, request, response, source.strip()[:80] or "Lien direct")
+    response.headers["Cache-Control"] = "no-store"
+    return HTMLResponse(html, headers=dict(response.headers))
 
 
-@router.post("/api/public/sales/{slug}/goal")
-def sales_goal(slug: str, request: Request, db: Session = Depends(get_db)):
+@router.get("/api/public/sales/{slug}/go")
+def sales_goal_redirect(slug: str, request: Request, response: Response, db: Session = Depends(get_db)):
+    """Enregistre le clic final puis renvoie le visiteur vers l'adresse externe."""
     rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
     tunnel = live_tunnel(slug, db)
     current = journey(request, tunnel)
@@ -728,4 +733,4 @@ def sales_goal(slug: str, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(403, "Action inaccessible")
     record_event(db, tunnel, page, current["sid"], "goal_click", current.get("source") or "Lien direct")
     db.commit()
-    return {"url": tunnel.goal_url}
+    return RedirectResponse(tunnel.goal_url, status_code=303, headers={"Cache-Control": "no-store"})

@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     secret_key: str = DEV_SECRET_KEY
     cors_origins: str = "http://localhost:3000"
+    # Adresse publique du site : lien canonique et apercu de lien.
+    site_url: str = "http://localhost:3000"
     openai_api_key: str = ""
     openai_model: str = "gpt-6-luna"
     openai_timeout_seconds: float = 90.0
