@@ -34,7 +34,7 @@ def brief():
 
 def fake_page(html, instruction, identity, **kwargs):
     role = kwargs["selection"]["page_role"]
-    action = "data-sillage-next" if role == "landing" else "data-sillage-goal"
+    action = "data-sillage-goal" if role == "offer" else "data-sillage-next"
     suffix = " modifié" if html else ""
     return {"message": "Page prête", "region": None,
             "html": f'<!doctype html><html><head><style>body{{color:#111}}</style></head><body><main><h1>{role}{suffix}</h1><button type="button" {action}>Continuer</button></main></body></html>'}
@@ -87,9 +87,9 @@ def test_guided_funnel_publication_and_measured_journey(client, monkeypatch):
     exported = client.get(f"/api/sales-funnels/{tunnel['id']}/export.zip")
     assert exported.status_code == 200
     with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
-        assert set(archive.namelist()) == {"index.html", "offre.html", "LISEZ-MOI.txt"}
-        assert "offre.html" in archive.read("index.html").decode()
-        assert "https://example.com/nouveau" in archive.read("offre.html").decode()
+        assert set(archive.namelist()) == {"index.html", "etape-2.html", "LISEZ-MOI.txt"}
+        assert "etape-2.html" in archive.read("index.html").decode()
+        assert "https://example.com/nouveau" in archive.read("etape-2.html").decode()
 
 
 def test_refine_keeps_public_page_until_publish_and_can_restore(client, monkeypatch):
@@ -233,3 +233,86 @@ def test_old_events_are_forgotten(tmp_path):
         restants = connection.execute(select(TunnelEvent.id)).scalars().all()
     engine.dispose()
     assert restants == ["recent"]
+
+
+def test_a_funnel_grows_beyond_two_steps(client, monkeypatch):
+    """Ajouter, déplacer, supprimer : la chaîne et les positions restent d'accord."""
+    tunnel = published_funnel(client, monkeypatch)
+    added = client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
+                        json={"name": "Preuves", "instruction": "Montre les résultats obtenus par des clients."})
+    assert added.status_code == 201, added.text
+    pages = added.json()["tunnel"]["pages"]
+    assert [page["name"] for page in pages] == ["Découverte", "Preuves", "L'offre"]
+    assert [page["position"] for page in pages] == [0, 1, 2]
+    # La chaîne suit l'ordre, et la dernière étape ne mène nulle part.
+    assert [page["next_page_id"] for page in pages] == [pages[1]["id"], pages[2]["id"], None]
+    assert added.json()["tunnel"]["entry_page_id"] == pages[0]["id"]
+    assert added.json()["warnings"] == []
+
+    # Déplacer l'offre en tête laisse deux boutons mal placés : on le dit.
+    moved = client.patch(f"/api/sales-funnels/{tunnel['id']}/pages/{pages[2]['id']}", json={"position": 0})
+    assert moved.status_code == 200, moved.text
+    assert [page["name"] for page in moved.json()["tunnel"]["pages"]] == ["L'offre", "Découverte", "Preuves"]
+    warnings = " ".join(moved.json()["warnings"])
+    assert "L'offre" in warnings and "Preuves" in warnings
+
+    # Et on revient en arrière.
+    back = client.patch(f"/api/sales-funnels/{tunnel['id']}/pages/{pages[2]['id']}", json={"position": 2})
+    assert back.json()["warnings"] == []
+
+    removed = client.delete(f"/api/sales-funnels/{tunnel['id']}/pages/{pages[1]['id']}")
+    assert removed.status_code == 200, removed.text
+    remaining = removed.json()["tunnel"]["pages"]
+    assert [page["name"] for page in remaining] == ["Découverte", "L'offre"]
+    assert [page["next_page_id"] for page in remaining] == [remaining[1]["id"], None]
+    # Un tunnel garde deux étapes.
+    assert client.delete(f"/api/sales-funnels/{tunnel['id']}/pages/{remaining[0]['id']}").status_code == 422
+
+
+def test_an_added_step_must_lead_somewhere(client, monkeypatch):
+    """Une étape intermédiaire sans bouton de passage est refusée."""
+    from app import sales
+
+    tunnel = published_funnel(client, monkeypatch)
+
+    def cul_de_sac(html, instruction, identity, **kwargs):
+        return {"message": "Page prête", "region": None,
+                "html": "<!doctype html><html><head><style>body{color:#111}</style></head>"
+                        "<body><main><h1>Preuves</h1></main></body></html>"}
+
+    monkeypatch.setattr(sales, "revise_page", cul_de_sac)
+    refused = client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
+                          json={"name": "Preuves", "instruction": "Montre les résultats obtenus."})
+    assert refused.status_code == 422
+    assert "passage" in refused.json()["detail"]
+
+
+def test_the_final_action_works_from_any_step(client, monkeypatch):
+    """Un visiteur convaincu dès la première étape doit pouvoir partir."""
+    tunnel = published_funnel(client, monkeypatch)
+    slug = tunnel["slug"]
+    assert client.post(f"/api/public/sales/{slug}/visit", json={"source": "Email"}).status_code == 200
+    goal = client.post(f"/api/public/sales/{slug}/goal")
+    assert goal.status_code == 200, goal.text
+    assert goal.json()["url"] == "https://example.com/reserver"
+    client.cookies.delete("sillage_sales_journey")
+
+
+def test_the_export_follows_the_real_chain(client, monkeypatch):
+    """Trois étapes, trois fichiers, et chacun saute vers le suivant."""
+    import io
+    import zipfile
+
+    tunnel = published_funnel(client, monkeypatch)
+    assert client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
+                       json={"name": "Preuves", "instruction": "Montre les résultats obtenus."}).status_code == 201
+    exported = client.get(f"/api/sales-funnels/{tunnel['id']}/export.zip")
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert set(archive.namelist()) == {"index.html", "etape-2.html", "etape-3.html", "LISEZ-MOI.txt"}
+        assert "etape-2.html" in archive.read("index.html").decode()
+        assert "etape-3.html" in archive.read("etape-2.html").decode()
+        # La dernière ne saute que vers l'adresse externe.
+        derniere = archive.read("etape-3.html").decode()
+        assert "https://example.com/reserver" in derniere and "etape-" not in derniere.split("<script>")[1]
+        assert "Preuves" in archive.read("LISEZ-MOI.txt").decode()
