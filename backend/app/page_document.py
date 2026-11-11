@@ -76,6 +76,32 @@ _MAILTO = re.compile(r"(?i)^mailto:[^\s@,;<>()]+@[^\s@,;<>()]+\.[a-z]{2,}(\?[^\s
 _TEL = re.compile(r"(?i)^tel:\+?[0-9][0-9 .()-]{3,24}$")
 
 
+# « go » est l'adresse de l'action finale d'un tunnel : aucune etape ne la prend.
+RESERVED_SLUGS = frozenset({"go"})
+
+
+def slug_base(value: str, *, limit: int = 70, fallback: str = "etape") -> str:
+    """Normalise un nom en segment d'adresse : accents retires, minuscules, tirets."""
+    normalise = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", normalise).strip("-")[:limit] or fallback
+
+
+def free_slug(value: str, taken: set[str], *, limit: int = 70, fallback: str = "etape") -> str:
+    """Le meme nom deux fois donne deux adresses distinctes.
+
+    `taken` porte aussi les mots reserves : une etape nommee « Go » ne doit pas
+    prendre l'adresse de l'action finale.
+    """
+    base = slug_base(value, limit=limit, fallback=fallback)
+    candidat = base
+    suffixe = 2
+    while candidat in taken:
+        queue = f"-{suffixe}"
+        candidat = f"{base[:limit - len(queue)]}{queue}"
+        suffixe += 1
+    return candidat
+
+
 def _safe_url(value: str, *, image: bool = False) -> bool:
     value = value.strip()
     if value.lower().startswith("https://"):

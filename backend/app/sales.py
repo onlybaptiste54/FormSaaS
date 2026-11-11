@@ -20,7 +20,7 @@ from .config import settings
 from .database import get_db
 from .luna import LunaAPIError, merge_page_region, revise_page, slugify
 from .models import Campaign, Company, Page, PageVersion, Tunnel, TunnelEvent, User
-from .page_document import prepare_page, public_document, render_page, same_document
+from .page_document import RESERVED_SLUGS, free_slug, prepare_page, public_document, render_page, same_document
 from .security import client_ip, current_user, rate_limit, write_user
 
 
@@ -107,7 +107,7 @@ def owned_tunnel(tunnel_id: str, db: Session, user: User) -> Tunnel:
 
 def page_payload(page: Page, *, draft: bool = False) -> dict:
     html = page.draft_html if draft and page.draft_html else page.html
-    return {"id": page.id, "name": page.name, "role": page.role, "position": page.position,
+    return {"id": page.id, "name": page.name, "slug": page.slug, "role": page.role, "position": page.position,
             "next_page_id": page.next_page_id, "html": render_page(html, ""),
             "has_draft": page.draft_html is not None, "visits": page.visits, "conversions": page.conversions}
 
@@ -289,8 +289,10 @@ def create_sales_funnel(data: SalesTunnelCreate, db: Session = Depends(get_db), 
     db.add(tunnel)
     db.flush()
     landing = Page(tunnel_id=tunnel.id, name="Découverte", role="landing", position=0,
+                   slug=step_slug(db, "Découverte"),
                    html=landing_html, manifest=landing_manifest)
     offer = Page(tunnel_id=tunnel.id, name="L'offre", role="offer", position=1,
+                 slug=step_slug(db, "L'offre"),
                  html=offer_html, manifest=offer_manifest)
     db.add_all([landing, offer])
     db.flush()
@@ -417,6 +419,7 @@ def add_sales_step(tunnel_id: str, data: SalesStepCreate, db: Session = Depends(
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     page = Page(tunnel_id=tunnel.id, name=data.name.strip(), role="step",
+                slug=step_slug(db, data.name.strip()),
                 position=len(ordered), html=html, manifest=manifest)
     db.add(page)
     db.flush()
@@ -570,7 +573,8 @@ def export_sales_funnel(tunnel_id: str, db: Session = Depends(get_db),
         raise HTTPException(422, "Ce parcours ne peut pas encore être exporté.")
     # Noms prévisibles et sans collision : le nom d'une étape est libre et peut
     # se répéter, sa place non.
-    names = ["index.html", *(f"etape-{index + 1}.html" for index in range(1, len(pages)))]
+    names = ["index.html", *(f"{page.slug or f'etape-{index + 2}'}.html"
+                             for index, page in enumerate(pages[1:]))]
     destination = json.dumps(tunnel.goal_url).replace("<", "\u003c")
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
@@ -675,12 +679,18 @@ def record_event(db: Session, tunnel: Tunnel, page: Page, sid: str, kind: str, s
     return inserted
 
 
-def step_path(tunnel: Tunnel, index: int) -> str:
+def step_slug(db: Session, name: str) -> str:
+    """Une adresse lisible pour une etape, unique parmi toutes les pages."""
+    pris = {slug for slug in db.scalars(select(Page.slug).where(Page.slug.is_not(None)))}
+    return free_slug(name, pris | RESERVED_SLUGS)
+
+
+def step_path(tunnel: Tunnel, page: Page, index: int) -> str:
     """L'adresse publique d'une etape. La premiere est la racine du tunnel."""
-    return f"/t/{tunnel.slug}" if index == 0 else f"/t/{tunnel.slug}/{index + 1}"
+    return f"/t/{tunnel.slug}" if index == 0 else f"/t/{tunnel.slug}/{page.slug}"
 
 
-def document_for(db: Session, tunnel: Tunnel, index: int, request: Request,
+def document_for(db: Session, tunnel: Tunnel, step: str, request: Request,
                  response: Response, source: str) -> str:
     """Rend une etape et enregistre le passage.
 
@@ -688,7 +698,10 @@ def document_for(db: Session, tunnel: Tunnel, index: int, request: Request,
     parente pour l'intercepter, c'est la navigation elle-meme qui le dit.
     """
     pages = sorted(tunnel.pages, key=lambda item: item.position)
-    if index < 0 or index >= len(pages):
+    if not pages:
+        raise HTTPException(404, "Étape introuvable")
+    index = 0 if not step else next((i for i, item in enumerate(pages) if item.slug == step), -1)
+    if index < 0:
         raise HTTPException(404, "Étape introuvable")
     page = pages[index]
     precedent = journey(request, tunnel)
@@ -702,22 +715,23 @@ def document_for(db: Session, tunnel: Tunnel, index: int, request: Request,
     db.commit()
     set_journey(response, request, {"tunnel": tunnel.id, "sid": sid, "page": page.id, "source": source})
     reference = tunnel_seo(tunnel)
+    suivante = pages[index + 1] if index + 1 < len(pages) and page.next_page_id else None
     return public_document(
         page.html,
         title=reference["title"], description=reference["description"],
-        canonical=f"{settings.site_url}{step_path(tunnel, index)}",
-        next_url=step_path(tunnel, index + 1) if page.next_page_id else None,
+        canonical=f"{settings.site_url}{step_path(tunnel, page, index)}",
+        next_url=step_path(tunnel, suivante, index + 1) if suivante else None,
         goal_url=f"/t/{tunnel.slug}/go" if tunnel.goal_url else None,
     )
 
 
 @router.get("/api/public/sales/{slug}/document", response_class=HTMLResponse)
-def sales_document(slug: str, request: Request, response: Response, step: int = Query(default=1, ge=1, le=20),
+def sales_document(slug: str, request: Request, response: Response, step: str = Query(default="", max_length=160),
                    source: str = Query(default="Lien direct", max_length=80), db: Session = Depends(get_db)):
     """Le document d'une etape, servi tel quel : c'est la page que lit le visiteur."""
     rate_limit("sales-journey", client_ip(request), limit=JOURNEY_CALLS, window_seconds=JOURNEY_WINDOW)
     tunnel = live_tunnel(slug, db)
-    html = document_for(db, tunnel, step - 1, request, response, source.strip()[:80] or "Lien direct")
+    html = document_for(db, tunnel, step.strip(), request, response, source.strip()[:80] or "Lien direct")
     response.headers["Cache-Control"] = "no-store"
     return HTMLResponse(html, headers=dict(response.headers))
 

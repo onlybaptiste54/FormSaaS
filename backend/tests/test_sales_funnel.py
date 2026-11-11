@@ -65,16 +65,17 @@ def test_guided_funnel_publication_and_measured_journey(client, monkeypatch):
     assert "<h1>landing</h1>" in first.text
     assert "<title>" in first.text and tunnel["name"] in first.text
     # Le bouton reste un bouton : le CSS de Luna continue de s'appliquer.
-    assert '<form action="/t/' + slug + '/2" method="get" style="display:contents">' in first.text
+    offre = tunnel["pages"][1]["slug"]
+    assert f'<form action="/t/{slug}/{offre}" method="get" style="display:contents">' in first.text
     assert "<button" in first.text and 'type="submit"' in first.text
 
     client.get(f"/api/public/sales/{slug}/document", params={"source": "Réseaux sociaux"})
-    second = client.get(f"/api/public/sales/{slug}/document", params={"step": 2})
+    second = client.get(f"/api/public/sales/{slug}/document", params={"step": offre})
     assert second.status_code == 200
     assert "<h1>offer</h1>" in second.text
     # Derniere etape : plus de passage, seulement l'action finale.
     assert f'/t/{slug}/go' in second.text
-    assert f'/t/{slug}/3' not in second.text
+    assert 'method="get"' not in second.text or f'/t/{slug}/go' in second.text
 
     goal = client.get(f"/api/public/sales/{slug}/go", follow_redirects=False)
     assert goal.status_code == 303
@@ -102,9 +103,9 @@ def test_guided_funnel_publication_and_measured_journey(client, monkeypatch):
     exported = client.get(f"/api/sales-funnels/{tunnel['id']}/export.zip")
     assert exported.status_code == 200
     with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
-        assert set(archive.namelist()) == {"index.html", "etape-2.html", "LISEZ-MOI.txt"}
-        assert "etape-2.html" in archive.read("index.html").decode()
-        assert "https://example.com/nouveau" in archive.read("etape-2.html").decode()
+        assert set(archive.namelist()) == {"index.html", f"{offre}.html", "LISEZ-MOI.txt"}
+        assert f"{offre}.html" in archive.read("index.html").decode()
+        assert "https://example.com/nouveau" in archive.read(f"{offre}.html").decode()
 
 
 def test_refine_keeps_public_page_until_publish_and_can_restore(client, monkeypatch):
@@ -319,15 +320,18 @@ def test_the_export_follows_the_real_chain(client, monkeypatch):
     tunnel = published_funnel(client, monkeypatch)
     assert client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
                        json={"name": "Preuves", "instruction": "Montre les résultats obtenus."}).status_code == 201
+    etapes = [page["slug"] for page in client.get(f"/api/sales-funnels/{tunnel['id']}").json()["pages"]]
     exported = client.get(f"/api/sales-funnels/{tunnel['id']}/export.zip")
     assert exported.status_code == 200, exported.text
     with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
-        assert set(archive.namelist()) == {"index.html", "etape-2.html", "etape-3.html", "LISEZ-MOI.txt"}
-        assert "etape-2.html" in archive.read("index.html").decode()
-        assert "etape-3.html" in archive.read("etape-2.html").decode()
+        # Un fichier par étape, nommé comme son adresse publique.
+        assert set(archive.namelist()) == {"index.html", f"{etapes[1]}.html", f"{etapes[2]}.html", "LISEZ-MOI.txt"}
+        assert f"{etapes[1]}.html" in archive.read("index.html").decode()
+        assert f"{etapes[2]}.html" in archive.read(f"{etapes[1]}.html").decode()
         # La dernière ne saute que vers l'adresse externe.
-        derniere = archive.read("etape-3.html").decode()
-        assert "https://example.com/reserver" in derniere and "etape-" not in derniere.split("<script>")[1]
+        derniere = archive.read(f"{etapes[2]}.html").decode()
+        assert "https://example.com/reserver" in derniere
+        assert ".html" not in derniere.split("<script>")[1]
         assert "Preuves" in archive.read("LISEZ-MOI.txt").decode()
 
 
@@ -382,3 +386,62 @@ def test_only_published_funnels_are_referenced(client, monkeypatch):
     assert draft["slug"] in [item["slug"] for item in client.get("/api/public/sales-sitemap").json()]
     assert client.post(f"/api/sales-funnels/{draft['id']}/pause").status_code == 200
     assert draft["slug"] not in [item["slug"] for item in client.get("/api/public/sales-sitemap").json()]
+
+
+def test_each_step_gets_a_readable_and_distinct_address(client, monkeypatch):
+    """Deux étapes du même nom ne peuvent pas partager une adresse."""
+    tunnel = published_funnel(client, monkeypatch)
+    premier = client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
+                          json={"name": "Preuves", "instruction": "Montre les résultats obtenus."})
+    assert premier.status_code == 201
+    second = client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
+                         json={"name": "Preuves", "instruction": "Montre d'autres résultats."})
+    assert second.status_code == 201
+    adresses = [page["slug"] for page in second.json()["tunnel"]["pages"]]
+    assert len(set(adresses)) == len(adresses)
+    assert any(slug.startswith("preuves") for slug in adresses)
+
+
+def test_a_step_can_never_take_the_final_action_address(client, monkeypatch):
+    """« go » mène à l'action finale : une étape ainsi nommée prend autre chose."""
+    tunnel = published_funnel(client, monkeypatch)
+    ajout = client.post(f"/api/sales-funnels/{tunnel['id']}/pages",
+                        json={"name": "Go", "instruction": "Invite à poursuivre la lecture."})
+    assert ajout.status_code == 201
+    assert "go" not in [page["slug"] for page in ajout.json()["tunnel"]["pages"]]
+
+
+def test_an_unknown_step_address_is_not_found(client, monkeypatch):
+    """Une adresse d'étape inventée ne sert aucune page."""
+    tunnel = published_funnel(client, monkeypatch)
+    assert client.get(f"/api/public/sales/{tunnel['slug']}/document",
+                      params={"step": "etape-inventee"}).status_code == 404
+
+
+def test_existing_sales_steps_are_given_an_address(tmp_path):
+    """La reprise nomme les étapes des tunnels déjà en base, sans collision."""
+    from sqlalchemy import create_engine, text
+
+    from app.database import Base, name_sales_steps
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'ancien.db'}")
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO tunnels (id, campaign_id, name, slug, status, kind, brief, identity, created_at, updated_at) "
+            "VALUES ('t1', 'c1', 'Tunnel', 'tunnel', 'active', 'sales', '{}', '{}', '2026-01-01', '2026-01-01')"))
+        for numero, nom in ((1, "Découverte"), (2, "Découverte"), (3, "Go")):
+            connection.execute(text(
+                "INSERT INTO pages (id, tunnel_id, name, role, position, html, manifest, visits, conversions, "
+                "created_at, updated_at) VALUES (:id, 't1', :nom, 'step', :pos, '<p>x</p>', '[]', 0, 0, "
+                "'2026-01-01', '2026-01-01')"),
+                {"id": f"p{numero}", "nom": nom, "pos": numero})
+    with engine.begin() as connection:
+        name_sales_steps(connection)
+    with engine.begin() as connection:
+        adresses = [slug for (slug,) in connection.execute(
+            text("SELECT slug FROM pages ORDER BY position")).all()]
+    engine.dispose()
+    assert adresses[0] == "decouverte"
+    assert adresses[1] == "decouverte-2"
+    assert adresses[2] != "go"

@@ -6,6 +6,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .config import settings
+from .page_document import RESERVED_SLUGS, free_slug
 
 
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
@@ -129,11 +130,34 @@ def upgrade(connection):
         "WHERE settings IS NULL AND role = 'thanks' AND form_id IS NOT NULL"
     ))
     connection.execute(text("UPDATE pages SET settings = '{}' WHERE settings IS NULL"))
+    name_sales_steps(connection)
     connection.execute(text(
         "UPDATE forms SET thank_you = '{}' WHERE id IN "
         "(SELECT form_id FROM pages WHERE role = 'thanks' AND form_id IS NOT NULL)"
     ))
     freeze_form_identity(connection)
+
+
+def name_sales_steps(connection):
+    """Donne une adresse lisible aux etapes de vente qui n'en ont pas.
+
+    Avant, un tunnel de vente se parcourait par numero d'etape : les pages
+    n'avaient pas de slug. La reprise les nomme d'apres leur titre, sans jamais
+    toucher a une adresse deja attribuee.
+    """
+    if "tunnels" not in inspect(connection).get_table_names():
+        return
+    pris = {slug for (slug,) in connection.execute(text(
+        "SELECT slug FROM pages WHERE slug IS NOT NULL")).all()}
+    rows = connection.execute(text(
+        "SELECT pages.id, pages.name FROM pages JOIN tunnels ON tunnels.id = pages.tunnel_id "
+        "WHERE pages.slug IS NULL AND tunnels.kind = 'sales' ORDER BY pages.position"
+    )).all()
+    for page_id, name in rows:
+        candidat = free_slug(name or "etape", pris | RESERVED_SLUGS)
+        pris.add(candidat)
+        connection.execute(text("UPDATE pages SET slug = :slug WHERE id = :id"),
+                           {"slug": candidat, "id": page_id})
 
 
 def freeze_form_identity(connection):
