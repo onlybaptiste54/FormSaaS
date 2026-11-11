@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .page_document import slug_base
 from .luna_ops import LunaOps, OpsError, apply_ops, ops_json_schema, validate_state
 
 
@@ -230,9 +231,8 @@ def default_design() -> dict:
     }
 
 def slugify(value: str) -> str:
-    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
-    return f"{value[:55]}-{uuid4().hex[:5]}"
+    """Adresse d'un tunnel : un suffixe aleatoire evite de deviner les voisins."""
+    return f"{slug_base(value, limit=55, fallback='tunnel')}-{uuid4().hex[:5]}"
 
 
 def field(key: str, label: str, kind: str, required: bool = False, **extra):

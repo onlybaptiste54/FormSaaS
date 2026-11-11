@@ -37,7 +37,8 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Pages générées par Luna avec le profil de marque, aperçu ordinateur/mobile, retouches en langage naturel, brouillons et versions précédentes
 - Parcours de deux à vingt étapes : ajout d'une étape décrite en une phrase, réordonnancement, suppression. L'étape qui en précède une autre porte le bouton de passage, la dernière le bouton d'action finale, et l'interface signale une page dont le bouton ne correspond plus à sa place
 - Publication par lien, mise en pause, correction du lien final et export HTML ZIP du tunnel publié, une page par étape avec la chaîne recopiée en dur
-- La page publique d'un tunnel de vente **est** le document généré, servi seul à sa propre adresse : une étape par URL (`/t/slug`, `/t/slug/2`…), sans coquille d'application ni iframe, donc indexable
+- La page publique d'un tunnel de vente **est** le document généré, servi seul à sa propre adresse, sans coquille d'application ni iframe, donc indexable
+- Une adresse lisible par étape, tirée de son nom : `/t/mon-tunnel`, `/t/mon-tunnel/preuves`, `/t/mon-tunnel/l-offre`. Le même nom deux fois donne deux adresses distinctes, et `go` reste réservé à l'action finale
 - Parcours sans JavaScript : chaque bouton d'action est enveloppé par le serveur dans un formulaire GET, et l'action finale passe par `/t/slug/go`, qui enregistre le clic puis redirige
 - Référencement : titre et description par tunnel, repli sur le nom et l'offre, écrits dans le `<head>` du document avec les balises Open Graph et le lien canonique, plus `robots.txt` et `sitemap.xml` alimentés par les tunnels en ligne
 - Statistiques par tunnel et par période : entrées, passage entre pages, clics finaux, évolution quotidienne et sources (`?source=` ou `?utm_source=`)

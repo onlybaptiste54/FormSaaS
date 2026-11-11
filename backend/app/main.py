@@ -25,7 +25,7 @@ from .brand_site import SiteError, fetch_image, proxy_path, read_site, sign_imag
 from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
 from .luna_ops import contrast_ratio
 from .models import Campaign, Company, Form, FormResponse, FormVersion, Page, Template, Tunnel, User, initial_tunnel_id, thanks_page_id, uid
-from .page_document import blank_form_html, legacy_to_html, prepare_page, render_page, same_document
+from .page_document import blank_form_html, free_slug, legacy_to_html, prepare_page, render_page, same_document
 from .schemas import BrandAnalyzeRequest, CampaignCreate, CampaignUpdate, CompanyUpdate, DraftUpdate, FormCreate, FormUpdate, LoginIn, LunaRefineRequest, PublicPageAdvance, PublicPageVisit, SiteBrandRequest, SubmitResponse, TemplateUse, TunnelPageCreate, TunnelPageUpdate
 from .security import admin_user, client_ip, create_token, current_user, ensure_production_secrets, rate_limit, verify_password, write_user
 from .seed import seed
@@ -830,19 +830,10 @@ def tunnel_json(tunnel: Tunnel, form: Form) -> dict:
 
 
 def unique_page_slug(db: Session, name: str, *, exclude_page_id: str | None = None) -> str:
-    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
-    base = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")[:70] or "etape"
-    candidate = base
-    suffix = 2
-    while True:
-        query = select(Page.id).where(Page.slug == candidate)
-        if exclude_page_id:
-            query = query.where(Page.id != exclude_page_id)
-        if not db.scalar(query):
-            return candidate
-        tail = f"-{suffix}"
-        candidate = f"{base[:70-len(tail)]}{tail}"
-        suffix += 1
+    query = select(Page.slug).where(Page.slug.is_not(None))
+    if exclude_page_id:
+        query = query.where(Page.id != exclude_page_id)
+    return free_slug(name, {slug for slug in db.scalars(query)})
 
 
 @app.get("/api/forms/{form_id}/tunnel")
