@@ -35,8 +35,10 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
   const [stepName, setStepName] = useState("");
   const [stepBrief, setStepBrief] = useState("");
   const [adding, setAdding] = useState(false);
+  const [seoTitle, setSeoTitle] = useState("");
+  const [seoDescription, setSeoDescription] = useState("");
 
-  function load() { setError(""); void api<SalesTunnel>(`/sales-funnels/${id}`).then(result => { setTunnel(result); setDestination(result.goal_url); setSelectedId(current => current || result.entry_page_id); }).catch(reason => setError(reason instanceof Error ? reason.message : "Tunnel introuvable")); }
+  function load() { setError(""); void api<SalesTunnel>(`/sales-funnels/${id}`).then(result => { setTunnel(result); setDestination(result.goal_url); setSeoTitle(result.seo.custom ? result.seo.title : ""); setSeoDescription(result.seo.custom ? result.seo.description : ""); setSelectedId(current => current || result.entry_page_id); }).catch(reason => setError(reason instanceof Error ? reason.message : "Tunnel introuvable")); }
   useEffect(load, [id]);
   useEffect(() => { if (tab === "stats") { setStats(null); void api<SalesStats>(`/sales-funnels/${id}/stats?days=${days}`).then(setStats).catch(reason => setError(reason instanceof Error ? reason.message : "Statistiques indisponibles")); } }, [id, tab, days]);
   useEffect(() => { if (selectedId) void api<Version[]>(`/sales-funnels/${id}/pages/${selectedId}/versions`).then(setVersions).catch(() => setVersions([])); }, [id, selectedId, tunnel?.status]);
@@ -107,6 +109,19 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
     finally { setBusy(false); }
   }
 
+  const seoChanged = tunnel ? seoTitle !== (tunnel.seo.custom ? tunnel.seo.title : "") || seoDescription !== (tunnel.seo.custom ? tunnel.seo.description : "") : false;
+
+  async function saveSeo(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !seoChanged) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api<SalesTunnel>(`/sales-funnels/${id}/seo`, { method: "PATCH", body: JSON.stringify({ title: seoTitle.trim(), description: seoDescription.trim() }) });
+      setTunnel(result); setMessage("La référence du tunnel a été enregistrée.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Référence invalide."); }
+    finally { setBusy(false); }
+  }
+
   async function restore(versionId: string) {
     if (!page || busy) return;
     setBusy(true); setError("");
@@ -159,6 +174,12 @@ export default function SalesFunnelDetail({ params }: { params: Promise<{ id: st
       <aside className="panel sales-ai-panel"><div className="sales-ai-head"><Sparkles size={20}/><h2>Retoucher avec Luna</h2></div><p>Décrivez un changement précis : « agrandis le titre », « rends l’offre plus claire », « utilise une couleur plus vive ».</p><form onSubmit={event => void refine(event)}><textarea value={instruction} maxLength={800} placeholder="Que souhaitez-vous changer sur cette page ?" onChange={event => setInstruction(event.target.value)} disabled={busy}/><button className="button button-primary" disabled={busy || instruction.trim().length < 3}>{busy ? <LoaderCircle className="spin" size={16}/> : <Sparkles size={16}/>} {busy ? "Luna travaille…" : "Appliquer"}</button></form>{page?.has_draft && <button className="sales-discard" disabled={busy} onClick={async () => { setTunnel(await api<SalesTunnel>(`/sales-funnels/${id}/pages/${page.id}/discard`, { method: "POST" })); setMessage("Brouillon abandonné."); }}>Abandonner les retouches</button>}{versions.length > 0 && <div className="sales-versions"><strong>Versions précédentes</strong>{versions.slice(0, 5).map(version => <button key={version.id} disabled={busy} onClick={() => void restore(version.id)}><Undo2 size={14}/>{new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(new Date(version.created_at))}</button>)}</div>}</aside>
     </div>}
     {tab === "pages" && <form className="panel sales-destination-form" onSubmit={event => void saveDestination(event)}><div><h2>Destination du bouton final</h2><p>{tunnel.goal_label} · Le clic est mesuré dans Sillage.</p></div><label>Adresse HTTPS<input type="url" required pattern="https://.*" maxLength={2048} value={destination} onChange={event => setDestination(event.target.value)}/></label><button className="button button-secondary" disabled={busy || destination.trim() === tunnel.goal_url}>Enregistrer le lien</button></form>}
+    {tab === "pages" && <form className="panel sales-destination-form sales-seo-form" onSubmit={event => void saveSeo(event)}>
+      <div><h2>Référence du tunnel</h2><p>Ce que montrent un moteur de recherche et l’aperçu quand on partage le lien. Laissez vide pour reprendre le nom du tunnel et son offre.</p></div>
+      <label>Titre<input maxLength={70} value={seoTitle} placeholder={tunnel.seo.title} onChange={event => setSeoTitle(event.target.value)}/><small>{seoTitle.length}/70</small></label>
+      <label>Description<input maxLength={160} value={seoDescription} placeholder={tunnel.seo.description} onChange={event => setSeoDescription(event.target.value)}/><small>{seoDescription.length}/160</small></label>
+      <button className="button button-secondary" disabled={busy || !seoChanged}>Enregistrer la référence</button>
+    </form>}
     {tab === "stats" && <div className="sales-stats">
       <div className="sales-period">Période : {[7, 30, 90].map(value => <button key={value} className={days === value ? "selected" : ""} onClick={() => setDays(value as 7 | 30 | 90)}>{value} jours</button>)}</div>
       {!stats ? <Loading/> : <>

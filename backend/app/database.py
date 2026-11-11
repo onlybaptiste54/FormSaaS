@@ -105,6 +105,8 @@ def upgrade(connection):
     add_column(connection, "tunnels", "identity", "JSON")
     add_column(connection, "tunnels", "goal_url", "VARCHAR(2048)")
     add_column(connection, "tunnels", "goal_label", "VARCHAR(100)")
+    add_column(connection, "tunnels", "seo_title", "VARCHAR(70)")
+    add_column(connection, "tunnels", "seo_description", "VARCHAR(160)")
 
     if legacy:
         split_campaigns_into_forms(connection)

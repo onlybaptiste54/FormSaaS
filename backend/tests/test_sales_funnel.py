@@ -316,3 +316,56 @@ def test_the_export_follows_the_real_chain(client, monkeypatch):
         derniere = archive.read("etape-3.html").decode()
         assert "https://example.com/reserver" in derniere and "etape-" not in derniere.split("<script>")[1]
         assert "Preuves" in archive.read("LISEZ-MOI.txt").decode()
+
+
+def test_a_published_funnel_carries_a_reference(client, monkeypatch):
+    """Titre et description, repli compris, et sans rien compter."""
+    tunnel = published_funnel(client, monkeypatch)
+    slug = tunnel["slug"]
+
+    # Par défaut : le nom du tunnel et son offre.
+    assert tunnel["seo"]["custom"] is False
+    assert tunnel["seo"]["title"] == tunnel["name"]
+    assert tunnel["seo"]["description"].startswith("Un accompagnement de six semaines")
+
+    meta = client.get(f"/api/public/sales/{slug}/meta")
+    assert meta.status_code == 200, meta.text
+    assert meta.json()["title"] == tunnel["name"]
+    assert "<h1" in meta.json()["html"]
+
+    # Lire la référence n'est pas une visite.
+    before = client.get(f"/api/sales-funnels/{tunnel['id']}").json()["pages"][0]["visits"]
+    client.get(f"/api/public/sales/{slug}/meta")
+    assert client.get(f"/api/sales-funnels/{tunnel['id']}").json()["pages"][0]["visits"] == before
+
+    saved = client.patch(f"/api/sales-funnels/{tunnel['id']}/seo",
+                         json={"title": "Structurer sa prospection", "description": "Six semaines pour trouver des clients réguliers."})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["seo"] == {"title": "Structurer sa prospection",
+                                   "description": "Six semaines pour trouver des clients réguliers.",
+                                   "custom": True}
+    assert client.get(f"/api/public/sales/{slug}/meta").json()["title"] == "Structurer sa prospection"
+
+    # Vider les deux champs ramène le repli.
+    cleared = client.patch(f"/api/sales-funnels/{tunnel['id']}/seo", json={"title": "", "description": ""})
+    assert cleared.json()["seo"]["custom"] is False
+
+
+def test_only_published_funnels_are_referenced(client, monkeypatch):
+    """Un brouillon n'a ni référence publique ni place dans le sitemap."""
+    from app import sales
+
+    monkeypatch.setattr(sales.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(sales, "revise_page", fake_page)
+    draft = client.post("/api/sales-funnels", json={**brief(), "name": "Brouillon non publie"}).json()
+
+    assert client.get(f"/api/public/sales/{draft['slug']}/meta").status_code == 404
+    listed = client.get("/api/public/sales-sitemap")
+    assert listed.status_code == 200
+    slugs = [item["slug"] for item in listed.json()]
+    assert draft["slug"] not in slugs
+
+    assert client.post(f"/api/sales-funnels/{draft['id']}/publish").status_code == 200
+    assert draft["slug"] in [item["slug"] for item in client.get("/api/public/sales-sitemap").json()]
+    assert client.post(f"/api/sales-funnels/{draft['id']}/pause").status_code == 200
+    assert draft["slug"] not in [item["slug"] for item in client.get("/api/public/sales-sitemap").json()]

@@ -50,6 +50,8 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}/api
       # Adresse de l'API vue depuis le conteneur web, pour le relais des visuels.
       API_INTERNAL_URL: http://api:8000
+      # Adresse publique du site, pour les liens absolus du sitemap et des aperçus.
+      SITE_URL: ${SITE_URL:-http://localhost:${WEB_PORT:-3000}}
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:

@@ -120,6 +120,7 @@ def tunnel_payload(tunnel: Tunnel) -> dict:
     return {"id": tunnel.id, "name": tunnel.name, "slug": tunnel.slug, "status": tunnel.status,
             "kind": tunnel.kind, "brief": tunnel.brief or {}, "goal_label": tunnel.goal_label,
             "goal_url": tunnel.goal_url, "entry_page_id": tunnel.entry_page_id,
+            "seo": tunnel_seo(tunnel),
             "pages": [page_payload(page, draft=True) for page in pages]}
 
 
@@ -477,6 +478,67 @@ def delete_sales_step(tunnel_id: str, page_id: str, db: Session = Depends(get_db
     if measured:
         warnings.append(f"{measured} mesures de cette étape ont été supprimées avec elle.")
     return {"tunnel": tunnel_payload(tunnel), "warnings": warnings}
+
+
+class SalesSeoUpdate(BaseModel):
+    title: str = Field(default="", max_length=70)
+    description: str = Field(default="", max_length=160)
+
+    @field_validator("title", "description")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+
+def tunnel_seo(tunnel: Tunnel) -> dict:
+    """Ce que montrent un moteur de recherche et l'aperçu d'un lien partagé.
+
+    Vides, le titre et la description retombent sur le nom du tunnel et son
+    offre : une page publiée porte toujours une référence correcte, même si
+    personne n'a rempli ces deux champs.
+    """
+    offer = str((tunnel.brief or {}).get("offer", "")).strip()
+    description = tunnel.seo_description or offer
+    return {"title": tunnel.seo_title or tunnel.name,
+            "description": description[:160],
+            "custom": bool(tunnel.seo_title or tunnel.seo_description)}
+
+
+@router.patch("/api/sales-funnels/{tunnel_id}/seo")
+def update_sales_seo(tunnel_id: str, data: SalesSeoUpdate, db: Session = Depends(get_db),
+                     user: User = Depends(write_user)):
+    tunnel = owned_tunnel(tunnel_id, db, user)
+    tunnel.seo_title = data.title or None
+    tunnel.seo_description = data.description or None
+    db.commit()
+    db.refresh(tunnel)
+    return tunnel_payload(tunnel)
+
+
+@router.get("/api/public/sales/{slug}/meta")
+def sales_meta(slug: str, db: Session = Depends(get_db)):
+    """Référence d'une page publiée, pour le rendu serveur du front.
+
+    Publique et sans jeton, comme la page qu'elle décrit, et sans rien compter :
+    un robot qui lit la référence n'est pas une visite.
+    """
+    tunnel = live_tunnel(slug, db)
+    entry = db.get(Page, tunnel.entry_page_id)
+    if not entry:
+        raise HTTPException(404, "Tunnel indisponible")
+    return {**tunnel_seo(tunnel), "name": tunnel.name, "updated_at": tunnel.updated_at.isoformat(),
+            "html": render_page(entry.html, "")}
+
+
+@router.get("/api/public/sales-sitemap")
+def sales_sitemap(db: Session = Depends(get_db)):
+    """Les tunnels en ligne, pour le sitemap du front. Rien de privé ici : ce
+    sont exactement les adresses que l'on souhaite voir indexées."""
+    tunnels = db.scalars(
+        select(Tunnel).join(Campaign, Tunnel.campaign_id == Campaign.id)
+        .where(Tunnel.kind == "sales", Tunnel.status == "active", Campaign.archived.is_(False))
+    ).all()
+    return [{"slug": tunnel.slug, "updated_at": tunnel.updated_at.isoformat()} for tunnel in tunnels]
 
 
 @router.post("/api/sales-funnels/{tunnel_id}/publish")

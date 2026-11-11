@@ -99,6 +99,10 @@ class Tunnel(Base):
     identity: Mapped[dict] = mapped_column(JSON, default=dict)
     goal_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     goal_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Reference : ce que montrent Google et l'apercu d'un lien partage.
+    # Vides, ils retombent sur le nom du tunnel et son offre (voir tunnel_seo).
+    seo_title: Mapped[str | None] = mapped_column(String(70), nullable=True)
+    seo_description: Mapped[str | None] = mapped_column(String(160), nullable=True)
     entry_page_id: Mapped[str | None] = mapped_column(ForeignKey("pages.id", use_alter=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
