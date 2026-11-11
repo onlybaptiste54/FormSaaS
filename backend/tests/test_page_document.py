@@ -294,3 +294,57 @@ def test_prepare_page_merges_several_style_blocks():
     # L'ordre des regles est conserve, donc la cascade ne bouge pas.
     style = document[document.find("<style"):document.find("</style>")]
     assert style.index("--a:#111") < style.index(".panel")
+
+
+def page(fragment: str) -> str:
+    """Une page minimale qui porte le fragment à éprouver."""
+    cleaned, _ = prepare_page(f'<main data-sillage-region="z"><h1>Titre</h1>{fragment}</main>',
+                              require_form=False)
+    return cleaned
+
+
+def test_a_drawing_survives_the_filter():
+    """Le SVG est du dessin : une icône, un dégradé, un tracé."""
+    icone = page('<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">'
+                 '<path d="M4 12l5 5L20 6" stroke="#2f6b4f" stroke-width="2" fill="none"/></svg>')
+    assert "<svg" in icone and "<path" in icone
+    # La casse canonique doit survivre : html5lib la rétablit, le filtre doit la connaître.
+    assert "viewbox" in icone.lower()
+    assert 'd="M4 12l5 5L20 6"' in icone
+
+    degrade = page('<svg viewBox="0 0 10 10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse">'
+                   '<stop offset="0" stop-color="#fff"/></linearGradient></defs>'
+                   '<rect width="10" height="10" fill="url(#g)"/></svg>')
+    assert "lineargradient" in degrade.lower()
+    assert 'fill="url(#g)"' in degrade
+
+
+def test_a_drawing_can_never_execute_or_fetch():
+    """Tout ce qui, dans un SVG, exécute ou va chercher dehors est retiré."""
+    assert "alert" not in page('<svg><script>alert(1)</script><circle r="2"/></svg>')
+    assert "onload" not in page('<svg onload="alert(1)"><circle r="2"/></svg>')
+    assert "iframe" not in page('<svg><foreignObject><iframe src="https://evil.example"></iframe></foreignObject></svg>')
+    assert "<use" not in page('<svg><use href="https://evil.example/x.svg#i"/></svg>')
+    assert "evil.example" not in page('<svg><image href="https://evil.example/p.png"/></svg>')
+    assert "animate" not in page('<svg><a><animate attributeName="href" to="javascript:alert(1)"/></a></svg>')
+    # Une référence de dessin ne vise que le document : sinon l'adresse du
+    # visiteur partirait chez un tiers au chargement.
+    assert "evil.example" not in page('<svg><rect width="4" height="4" fill="url(https://evil.example/x)"/></svg>')
+
+
+def test_a_page_can_reach_someone_and_move_within_itself():
+    """Écrire, appeler, et renvoyer vers sa propre section."""
+    assert 'href="mailto:bonjour@atelier.fr"' in page('<a href="mailto:bonjour@atelier.fr">Écrivez-nous</a>')
+    assert "subject=Devis" in page('<a href="mailto:bonjour@atelier.fr?subject=Devis">Devis</a>')
+    assert 'href="tel:+33240000000"' in page('<a href="tel:+33240000000">Appelez-nous</a>')
+    assert 'href="#tarifs"' in page('<a href="#tarifs">Tarifs</a><section id="tarifs">T</section>')
+
+
+def test_the_old_refusals_still_hold():
+    """Ce qui était refusé avant l'est toujours."""
+    assert "javascript:" not in page('<a href="javascript:alert(1)">Cliquez</a>')
+    assert "http://exemple" not in page('<a href="http://exemple.fr">Non sécurisé</a>')
+    # Les trois schémas rouverts ne valent que pour un lien, jamais pour une source.
+    assert "mailto:" not in page('<img src="mailto:a@b.fr" alt="x">')
+    assert 'src="#' not in page('<img src="#tarifs" alt="x">')
+    assert "javascript" not in page('<a href="tel:javascript:alert(1)">Appel</a>')

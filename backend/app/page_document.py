@@ -19,7 +19,11 @@ from bleach.css_sanitizer import CSSSanitizer
 
 
 MAX_PAGE_HTML = 250_000
-_TAGS = frozenset("a abbr article aside b blockquote br button caption cite code col colgroup dd del details div dl dt em fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr i img input label legend li main mark nav ol option p picture pre q s section select small source span strong sub summary sup table tbody td textarea th thead time title tr u ul video".split()) | {"style"}
+# Dessin uniquement. Rien de ce qui suit ne peut viser une adresse : ni use,
+# ni image, ni les elements d'animation, qui savent viser un attribut href.
+_SVG_TAGS = frozenset("svg g path circle ellipse line polyline polygon rect defs lineargradient radialgradient stop clippath text tspan desc".split()) | {"linearGradient", "radialGradient", "clipPath"}
+_SVG_ATTRS = frozenset("viewbox xmlns fill stroke stroke-width stroke-linecap stroke-linejoin stroke-dasharray stroke-dashoffset stroke-miterlimit d cx cy r rx ry x y x1 y1 x2 y2 width height points transform opacity fill-opacity stroke-opacity fill-rule clip-rule offset stop-color stop-opacity gradientunits gradienttransform spreadmethod preserveaspectratio text-anchor dominant-baseline font-size font-family font-weight letter-spacing clip-path vector-effect focusable".split()) | {"viewBox", "gradientUnits", "gradientTransform", "preserveAspectRatio", "spreadMethod", "clipPathUnits"}
+_TAGS = frozenset("a abbr article aside b blockquote br button caption cite code col colgroup dd del details div dl dt em fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr i img input label legend li main mark nav ol option p picture pre q s section select small source span strong sub summary sup table tbody td textarea th thead time title tr u ul video".split()) | {"style"} | _SVG_TAGS
 _GLOBAL_ATTRS = frozenset("class id title lang dir role aria-label aria-labelledby aria-describedby aria-hidden aria-pressed tabindex data-sillage data-sillage-next data-sillage-goal data-sillage-region data-luna-id data-field data-rating style".split())
 _TAG_ATTRS = {
     "a": {"href", "target", "rel"}, "img": {"src", "alt", "width", "height", "loading"},
@@ -30,8 +34,12 @@ _TAG_ATTRS = {
     "option": {"value", "selected", "disabled"}, "label": {"for"}, "button": {"type", "name", "value", "disabled"},
     "td": {"colspan", "rowspan"}, "th": {"scope", "colspan", "rowspan"},
 }
+# Une reference de dessin ne peut viser que le document lui-meme.
+_SVG_LOCAL_REF = re.compile(r"(?i)url\(\s*['\"]?#[\w:.-]+['\"]?\s*\)")
 _VOID = frozenset("br hr img input source col".split())
-_DROP_CONTENT = frozenset("script iframe object embed svg math noscript template".split())
+_TAG_ATTRS.update({tag: _SVG_ATTRS for tag in _SVG_TAGS})
+# foreignObject reintroduit du HTML dans le dessin : il part avec son contenu.
+_DROP_CONTENT = frozenset("script iframe object embed foreignobject math noscript template".split())
 _DROP_VOID = frozenset("base link meta".split())
 _CSS_BAD_PROPERTIES = frozenset({"behavior", "-moz-binding"})
 _PAGE_CSP = (
@@ -48,9 +56,19 @@ _PAGE_CSP = (
 PROXY_PREFIX = "/media/brand?"
 
 
+# Une ancre interne, une adresse e-mail, un numero de telephone : aucun des
+# trois ne charge quoi que ce soit, et sans eux une page vitrine ne peut ni
+# renvoyer vers sa propre section, ni proposer d'appeler.
+_ANCHOR = re.compile(r"^#[A-Za-z][\w:.-]*$")
+_MAILTO = re.compile(r"(?i)^mailto:[^\s@,;<>()]+@[^\s@,;<>()]+\.[a-z]{2,}(\?[^\s<>]*)?$")
+_TEL = re.compile(r"(?i)^tel:\+?[0-9][0-9 .()-]{3,24}$")
+
+
 def _safe_url(value: str, *, image: bool = False) -> bool:
     value = value.strip()
     if value.lower().startswith("https://"):
+        return True
+    if not image and (_ANCHOR.match(value) or _MAILTO.match(value) or _TEL.match(value)):
         return True
     # Seul ce chemin relatif est accepte : // mene ailleurs, pas chez nous.
     if image and value.startswith(PROXY_PREFIX):
@@ -269,6 +287,8 @@ def _allowed_attr(tag: str, name: str, value: str) -> bool:
         return value in {"text", "email", "tel", "number", "date", "radio", "checkbox", "hidden"}
     if name == "method":
         return value.lower() == "post"
+    if tag in _SVG_TAGS and "url(" in value.lower():
+        return bool(_SVG_LOCAL_REF.fullmatch(value.strip()))
     return True
 
 
@@ -373,7 +393,7 @@ def prepare_page(html: str, *, require_form: bool) -> tuple[str, list[dict]]:
     guard.feed(html)
     guarded = "".join(guard.parts)
     cleaned = bleach.clean(guarded, tags=_TAGS, attributes=_allowed_attr,
-                           protocols={"https", "data", ""}, strip=True,
+                           protocols={"https", "data", "mailto", "tel", ""}, strip=True,
                            strip_comments=True, css_sanitizer=_PageCSS())
     cleaned = _merge_styles(_clean_links(cleaned))
     manifest = _manifest(cleaned, require_form=require_form)
