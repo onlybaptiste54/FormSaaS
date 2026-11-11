@@ -151,3 +151,85 @@ def test_sales_funnel_isolated_by_company(client):
                         json={"goal_url": "https://example.com"}).status_code == 404
     assert client.get("/api/sales-funnels", headers=headers).json() == []
     assert client.get("/api/sales-funnels/overview", headers=headers).json()["visits"] == 0
+
+
+def published_funnel(client, monkeypatch):
+    """Un tunnel publie, pour les gardes qui ont besoin d'un parcours vivant."""
+    from app import sales
+
+    monkeypatch.setattr(sales.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(sales, "revise_page", fake_page)
+    created = client.post("/api/sales-funnels", json={**brief(), "name": "Garde du parcours"})
+    assert created.status_code == 201, created.text
+    tunnel = created.json()
+    assert client.post(f"/api/sales-funnels/{tunnel['id']}/publish").status_code == 200
+    return tunnel
+
+
+def test_the_public_journey_is_capped(client, monkeypatch):
+    """Les trois routes partagent un seul seau : fabriquer des sessions est gratuit.
+
+    Le plafond est pose avant la resolution du tunnel, donc une rafale sur un
+    slug inconnu compte aussi. Il est abaisse ici pour ne pas tirer cent vingt
+    appels dans un test.
+    """
+    from app import sales
+
+    monkeypatch.setattr(sales, "JOURNEY_CALLS", 3)
+    for attempt in range(3):
+        refused = client.post("/api/public/sales/slug-inconnu/visit", json={"source": "Email"})
+        assert refused.status_code == 404, f"appel {attempt}"
+    blocked = client.post("/api/public/sales/slug-inconnu/visit", json={"source": "Email"})
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) > 0
+    # Le seau est partage : /advance et /goal sont bloques aussi.
+    assert client.post("/api/public/sales/slug-inconnu/advance").status_code == 429
+    assert client.post("/api/public/sales/slug-inconnu/goal").status_code == 429
+
+
+def test_a_journey_cookie_without_a_session_is_refused(client, monkeypatch):
+    """Un jeton d'une forme anterieure doit donner 403, jamais 500.
+
+    Sans identifiant de session, la deduplication des evenements ne tient plus :
+    l'etape est inaccessible plutot que comptee deux fois.
+    """
+    import jwt
+
+    from app import sales
+
+    tunnel = published_funnel(client, monkeypatch)
+    landing = next(page for page in tunnel["pages"] if page["role"] == "landing")
+    token = jwt.encode({"tunnel": tunnel["id"], "page": landing["id"]},
+                       sales.settings.secret_key, algorithm="HS256")
+    client.cookies.set("sillage_sales_journey", token)
+    try:
+        assert client.post(f"/api/public/sales/{tunnel['slug']}/advance").status_code == 403
+        assert client.post(f"/api/public/sales/{tunnel['slug']}/goal").status_code == 403
+    finally:
+        client.cookies.delete("sillage_sales_journey")
+
+
+def test_old_events_are_forgotten(tmp_path):
+    """La mesure de parcours a une duree de conservation."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import create_engine, select
+
+    from app.database import Base, EVENT_RETENTION_DAYS, purge_old_events
+    from app.models import TunnelEvent
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'mesure.db'}")
+    Base.metadata.create_all(engine)
+    maintenant = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        for suffixe, age in (("ancien", EVENT_RETENTION_DAYS + 5), ("recent", 3)):
+            connection.execute(TunnelEvent.__table__.insert().values(
+                id=suffixe, tunnel_id="t", page_id="p", session_id="s",
+                event_key=f"s:p:{suffixe}", kind="page_view", source="Email",
+                created_at=maintenant - timedelta(days=age)))
+    with engine.begin() as connection:
+        purge_old_events(connection)
+    with engine.begin() as connection:
+        restants = connection.execute(select(TunnelEvent.id)).scalars().all()
+    engine.dispose()
+    assert restants == ["recent"]
