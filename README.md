@@ -49,6 +49,8 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Sélection au rectangle dans l’éditeur, capture automatique de la zone avec son vrai fond
 - Captures et images du dialogue persistées avec les versions ; brouillon séparé du document en ligne et retour à une version précédente
 - Garde-fous serveur : manifeste des champs extrait du HTML, limites de taille, HTML/CSS filtré, scripts interdits et consentement injecté par le serveur
+- Dessin en SVG en ligne : icônes, séparateurs et dégradés acceptés, sans script, sans `foreignObject`, sans `use` ni `image`, et un `url()` ne vise qu'un identifiant de la page
+- Liens `mailto:`, `tel:` et ancres internes `#section`, en plus des adresses HTTPS. Ces trois schémas valent pour un lien, jamais pour une source d'image
 - Campagne, tunnels et pages ordonnées : étapes visibles dans une liste latérale, création depuis zéro ou depuis une page modèle, aperçu direct et édition avec Luna
 - Parcours public protégé par un cookie signé d’une heure ; visites et passages comptés par page, document de remerciement remis après soumission
 - Bilan par campagne : nombre de formulaires, visites, conversion, meilleur formulaire et activité sur 7 jours
