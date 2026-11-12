@@ -63,6 +63,30 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=12, max_length=256)
+
+
+class InvitationTokenIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class AcceptInvitationIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+    full_name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=12, max_length=256)
+
+
+class InviteIn(BaseModel):
+    email: EmailStr
+    role: Literal["admin", "creator", "viewer"]
+
+
 class FirstAdminIn(BaseModel):
     """Premier compte d'une mise en ligne : saisi en ligne de commande."""
 

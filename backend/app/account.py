@@ -1,28 +1,47 @@
 """Connexion, compte, marque de l'entreprise, statistiques et equipe."""
 
 import hmac
+import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import desc, func, select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import get_db
 from .brand_site import SiteError, fetch_image, read_site, sign_image
 from .luna import LunaAPIError, analyze_brand, analyze_site_brand
-from .models import Campaign, Company, Form, FormResponse, Tunnel, User
-from .schemas import BrandAnalyzeRequest, CompanyUpdate, LoginIn, SiteBrandRequest
-from .security import admin_user, client_ip, create_token, current_user, rate_limit, verify_password, write_user
+from .mailer import send_mail
+from .models import Campaign, Company, Form, FormResponse, Invitation, PasswordReset, Tunnel, User, now
+from .schemas import (AcceptInvitationIn, BrandAnalyzeRequest, CompanyUpdate, ForgotPasswordIn, InvitationTokenIn,
+                      InviteIn, LoginIn, ResetPasswordIn, SiteBrandRequest)
+from .security import (admin_user, client_ip, create_token, current_user, hash_link_token, hash_password,
+                       new_link_token, rate_limit, verify_password, write_user)
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # Limitation de débit, par adresse IP. Seules les tentatives ratées comptent
 # pour la connexion : un usage normal n'est jamais bloqué.
 LOGIN_FAILURES, LOGIN_WINDOW = 10, 15 * 60
+
+# Mot de passe oublié : la demande est toujours comptée, même pour une adresse
+# inconnue, sinon la limite révélerait quelles adresses ont un compte.
+FORGOT_PER_IP, FORGOT_IP_WINDOW = 5, 15 * 60
+FORGOT_PER_EMAIL, FORGOT_EMAIL_WINDOW = 3, 60 * 60
+INVITES_PER_COMPANY, INVITE_WINDOW = 20, 60 * 60
+
+RESET_VALIDITY = timedelta(hours=1)
+INVITATION_VALIDITY = timedelta(days=7)
+
+INVALID_RESET = "Ce lien n'est plus valable. Demandez-en un nouveau."
+INVALID_INVITATION = ("Cette invitation n'est plus valable. "
+                      "Demandez à votre administrateur de vous en renvoyer une.")
+ROLE_LABELS = {"admin": "administrateur", "creator": "créateur", "viewer": "lecteur"}
 
 # Le relais de visuels refait l'appel sortant a chaque requete, sans cache
 # serveur : marteler une URL signee immobilise un worker jusqu'a dix secondes.
@@ -187,3 +206,166 @@ def stats(db: Session = Depends(get_db), user: User = Depends(current_user)):
 def team(db: Session = Depends(get_db), user: User = Depends(current_user)):
     members = db.scalars(select(User).where(User.company_id == user.company_id).order_by(User.created_at)).all()
     return [{"id": m.id, "full_name": m.full_name, "email": m.email, "role": m.role} for m in members]
+
+
+# --- Mot de passe oublié -----------------------------------------------------
+
+
+def send_reset_mail(email: str, token: str) -> None:
+    """Part en tâche de fond : un serveur SMTP lent ne retient pas la requête."""
+    try:
+        send_mail(
+            email,
+            "Réinitialisation de votre mot de passe Sillage",
+            "Bonjour,\n\n"
+            "Pour choisir un nouveau mot de passe, ouvrez ce lien :\n"
+            f"{settings.site_url}/reset-password#{token}\n\n"
+            "Ce lien est valable une heure et ne sert qu'une fois.\n"
+            "Si vous n'avez rien demandé, ignorez ce message : votre mot de passe reste inchangé.\n",
+        )
+    except Exception:
+        # Sans le lien : il donnerait accès au compte à qui lit les logs.
+        logger.exception("Envoi du lien de réinitialisation impossible")
+
+
+@router.post("/api/auth/forgot-password")
+def forgot_password(data: ForgotPasswordIn, request: Request, background: BackgroundTasks,
+                    db: Session = Depends(get_db)):
+    email = data.email.lower()
+    rate_limit("forgot-ip", client_ip(request), limit=FORGOT_PER_IP, window_seconds=FORGOT_IP_WINDOW)
+    rate_limit("forgot-email", email, limit=FORGOT_PER_EMAIL, window_seconds=FORGOT_EMAIL_WINDOW)
+    user = db.scalar(select(User).where(User.email == email))
+    if user:
+        db.execute(delete(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)))
+        token = new_link_token()
+        db.add(PasswordReset(user_id=user.id, token_hash=hash_link_token(token),
+                             expires_at=now() + RESET_VALIDITY))
+        db.commit()
+        background.add_task(send_reset_mail, email, token)
+    # Même réponse que le compte existe ou non.
+    return {"detail": "Si un compte existe pour cette adresse, un lien vient d'y être envoyé."}
+
+
+@router.post("/api/auth/reset-password")
+def reset_password(data: ResetPasswordIn, request: Request, db: Session = Depends(get_db)):
+    ip = client_ip(request)
+    rate_limit("reset", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW, record=False)
+    # L'échéance se compare en SQL : SQLite rend des dates sans fuseau.
+    reset = db.scalar(select(PasswordReset).where(
+        PasswordReset.token_hash == hash_link_token(data.token),
+        PasswordReset.used_at.is_(None), PasswordReset.expires_at > now()))
+    # Le marquage « utilisé » est atomique : deux requêtes simultanées ne passent pas toutes les deux.
+    claimed = reset and db.execute(update(PasswordReset).where(
+        PasswordReset.id == reset.id, PasswordReset.used_at.is_(None)).values(used_at=now())).rowcount == 1
+    if not claimed:
+        db.rollback()
+        rate_limit("reset", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW)
+        raise HTTPException(400, INVALID_RESET)
+    user = db.get(User, reset.user_id)
+    user.password_hash = hash_password(data.password)
+    db.execute(delete(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.id != reset.id))
+    db.commit()
+    return {"detail": "Mot de passe enregistré."}
+
+
+# --- Invitations -------------------------------------------------------------
+
+
+def pending_invitation(db: Session, token: str, ip: str) -> Invitation:
+    """L'invitation que ce jeton ouvre, ou 400 (et un échec compté pour cette adresse)."""
+    rate_limit("invitation", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW, record=False)
+    invitation = db.scalar(select(Invitation).where(
+        Invitation.token_hash == hash_link_token(token),
+        Invitation.accepted_at.is_(None), Invitation.expires_at > now()))
+    if not invitation:
+        rate_limit("invitation", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW)
+        raise HTTPException(400, INVALID_INVITATION)
+    return invitation
+
+
+def invitation_out(invitation: Invitation) -> dict:
+    return {"id": invitation.id, "email": invitation.email, "role": invitation.role,
+            "created_at": invitation.created_at.isoformat(), "expires_at": invitation.expires_at.isoformat()}
+
+
+@router.post("/api/auth/invitation")
+def check_invitation(data: InvitationTokenIn, request: Request, db: Session = Depends(get_db)):
+    invitation = pending_invitation(db, data.token, client_ip(request))
+    company = db.get(Company, invitation.company_id)
+    return {"company": company.name, "email": invitation.email, "role": invitation.role}
+
+
+@router.post("/api/auth/accept-invitation")
+def accept_invitation(data: AcceptInvitationIn, request: Request, db: Session = Depends(get_db)):
+    ip = client_ip(request)
+    invitation = pending_invitation(db, data.token, ip)
+    if db.scalar(select(User.id).where(User.email == invitation.email)):
+        raise HTTPException(409, "Un compte existe déjà avec cette adresse. Connectez-vous.")
+    # Même précaution que pour la réinitialisation : une invitation ne sert qu'une fois.
+    claimed = db.execute(update(Invitation).where(
+        Invitation.id == invitation.id, Invitation.accepted_at.is_(None)).values(accepted_at=now()))
+    if claimed.rowcount != 1:
+        db.rollback()
+        rate_limit("invitation", ip, limit=LOGIN_FAILURES, window_seconds=LOGIN_WINDOW)
+        raise HTTPException(400, INVALID_INVITATION)
+    user = User(company_id=invitation.company_id, email=invitation.email, full_name=data.full_name.strip(),
+                password_hash=hash_password(data.password), role=invitation.role)
+    db.add(user)
+    db.commit()
+    return {"access_token": create_token(user), "token_type": "bearer"}
+
+
+@router.get("/api/team/invitations")
+def list_invitations(db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    pending = db.scalars(select(Invitation).where(
+        Invitation.company_id == user.company_id, Invitation.accepted_at.is_(None),
+        Invitation.expires_at > now()).order_by(Invitation.created_at)).all()
+    return [invitation_out(i) for i in pending]
+
+
+@router.post("/api/team/invitations")
+def invite_member(data: InviteIn, db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    rate_limit("invite", user.company_id, limit=INVITES_PER_COMPANY, window_seconds=INVITE_WINDOW)
+    email = data.email.lower()
+    if db.scalar(select(User.id).where(User.email == email)):
+        raise HTTPException(409, "Un compte existe déjà avec cette adresse.")
+    token = new_link_token()
+    invitation = Invitation(company_id=user.company_id, email=email, role=data.role,
+                            token_hash=hash_link_token(token), invited_by=user.id,
+                            expires_at=now() + INVITATION_VALIDITY)
+    db.add(invitation)
+    db.commit()
+    company = db.get(Company, user.company_id)
+    try:
+        # Synchrone : l'administrateur doit savoir si le message n'est pas parti.
+        send_mail(
+            email,
+            f"Invitation à rejoindre {company.name} sur Sillage",
+            "Bonjour,\n\n"
+            f"{user.full_name} vous invite à rejoindre {company.name} sur Sillage, "
+            f"avec le rôle {ROLE_LABELS[data.role]}.\n\n"
+            "Pour créer votre compte, ouvrez ce lien :\n"
+            f"{settings.site_url}/invitation#{token}\n\n"
+            "Ce lien est valable 7 jours.\n",
+        )
+    except Exception as exc:
+        logger.exception("Envoi de l'invitation impossible")
+        db.delete(invitation)
+        db.commit()
+        raise HTTPException(502, "L'e-mail n'a pas pu partir. Vérifiez la configuration SMTP de l'API.") from exc
+    # Renvoyer une invitation remplace la précédente, une fois la nouvelle partie.
+    db.execute(delete(Invitation).where(
+        Invitation.company_id == user.company_id, Invitation.email == email,
+        Invitation.accepted_at.is_(None), Invitation.id != invitation.id))
+    db.commit()
+    return invitation_out(invitation)
+
+
+@router.delete("/api/team/invitations/{invitation_id}", status_code=204)
+def revoke_invitation(invitation_id: str, db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    invitation = db.scalar(select(Invitation).where(
+        Invitation.id == invitation_id, Invitation.company_id == user.company_id))
+    if not invitation:
+        raise HTTPException(404, "Invitation introuvable")
+    db.delete(invitation)
+    db.commit()

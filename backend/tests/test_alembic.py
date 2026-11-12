@@ -59,7 +59,10 @@ def test_legacy_path_only_knows_tables_that_exist():
 def test_database_without_alembic_version_is_upgraded_then_stamped(sqlite_engine):
     from app import database, models
 
-    models.Base.metadata.create_all(sqlite_engine)
+    # Une base d'avant Alembic ne porte que les tables du schema de base.
+    models.Base.metadata.create_all(sqlite_engine, tables=[
+        table for table in models.Base.metadata.sorted_tables if table.name in database.BASELINE_TABLES
+    ])
     with sqlite_engine.begin() as connection:
         connection.execute(models.Company.__table__.insert().values(id="c1", name="Atelier", dpo_email="dpo@example.fr"))
 

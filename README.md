@@ -47,6 +47,7 @@ Le schéma est géré par Alembic (scripts dans `backend/app/migrations/versions
 - Mesure de parcours sans donnée personnelle : ni adresse IP ni user-agent enregistrés, événements dédupliqués par session et par étape, et oubliés au-delà de treize mois
 - Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.
 - Connexion sécurisée par jeton, tentatives limitées et rôles appliqués sur chaque écriture
+- Invitations de collègues par e-mail (lien personnel valable 7 jours, rôle choisi par l'administrateur) et mot de passe oublié (lien valable une heure, à usage unique)
 - Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
 - Création par brief avec Luna via l’API OpenAI Responses : une génération écrit directement le document HTML/CSS complet
 - Un document HTML/CSS par page, assaini avant stockage puis rendu dans la même iframe isolée pour l’éditeur, la page publique et les vignettes
@@ -100,6 +101,10 @@ Variables principales :
 | `POSTGRES_USER` | `sillage` |
 | `POSTGRES_PASSWORD` | `sillage_dev` |
 | `SECRET_KEY` | clé de développement, refusée si `ENVIRONMENT=production` |
+| `SMTP_HOST` | vide : les liens d'invitation et de réinitialisation sont écrits dans les logs de l'API |
+| `SMTP_PORT` | `587` (STARTTLS) ; `465` pour SSL ; tout autre port reste sans chiffrement, par exemple `1025` pour Mailpit en local |
+| `SMTP_USER`, `SMTP_PASSWORD` | vides : pas d'authentification |
+| `SMTP_FROM` | vide : l'adresse `SMTP_USER` sert d'expéditeur |
 | `OPENAI_API_KEY` | vide : Luna utilise le générateur local |
 | `OPENAI_MODEL` | `gpt-6-luna` |
 | `OPENAI_TIMEOUT_SECONDS` | `90` |
@@ -126,7 +131,7 @@ Créer le premier administrateur, une seule fois :
 docker compose exec api python -m app.admin --email vous@exemple.fr --company "Votre entreprise"
 ```
 
-Le mot de passe est demandé sans être affiché ; il doit faire 12 caractères au minimum. Pour un déploiement automatisé, le passer par `ADMIN_PASSWORD` plutôt que par `--password`, qui resterait dans l'historique du shell. La commande crée l'entreprise et son administrateur, et refuse de s'exécuter dès qu'un compte existe : elle ne peut pas servir à s'ajouter à une installation en service. Les membres suivants s'ajouteront par le parcours d'invitation, qui reste à construire.
+Le mot de passe est demandé sans être affiché ; il doit faire 12 caractères au minimum. Pour un déploiement automatisé, le passer par `ADMIN_PASSWORD` plutôt que par `--password`, qui resterait dans l'historique du shell. La commande crée l'entreprise et son administrateur, et refuse de s'exécuter dès qu'un compte existe : elle ne peut pas servir à s'ajouter à une installation en service. Les membres suivants arrivent par invitation : il n'y a pas d'inscription ouverte. Un administrateur ouvre la page Équipe, saisit l'adresse et le rôle (administrateur, créateur ou lecteur), et la personne reçoit par e-mail un lien valable 7 jours. Elle y choisit son nom et son mot de passe, puis entre directement dans l'entreprise. Renvoyer une invitation à la même adresse remplace la précédente, et l'administrateur peut la révoquer tant qu'elle n'est pas acceptée. Sans `SMTP_HOST`, les liens d'invitation et de réinitialisation apparaissent dans les logs de l'API : quiconque peut lire ces logs peut s'en servir.
 
 Deux limites à connaître avant d'ouvrir au public :
 

@@ -1,10 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Check, Eye, EyeOff, LoaderCircle } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, LoaderCircle } from "lucide-react";
 import { api, getToken } from "@/lib/api";
-import { Logo } from "@/components/logo";
+import { AuthLayout } from "@/components/auth-layout";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -30,12 +31,7 @@ export default function LoginPage() {
     try { const data = await api<{ access_token: string }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); localStorage.setItem("sillage_token", data.access_token); router.push("/dashboard"); }
     catch (err) { setError(err instanceof Error ? err.message : "Connexion impossible"); setBusy(false); }
   }
-  return <main className="login-page">
-    <section className="login-brand">
-      <Logo />
-      <div className="login-promise"><p className="eyebrow light">DES TUNNELS DE VENTE À VOTRE IMAGE</p><h1>Présentez votre offre. Guidez chaque visiteur.</h1><p>Décrivez votre offre à Luna, publiez vos pages et suivez les passages jusqu’au clic final.</p><div className="promise-list"><span><Check size={17} />Des pages créées avec votre marque</span><span><Check size={17} />Un parcours guidé, étape par étape</span><span><Check size={17} />Des résultats liés à chaque tunnel</span></div></div>
-      <p className="brand-foot">Sillage · Nantes, France</p>
-    </section>
-    <section className="login-panel"><div className="login-box"><p className="eyebrow">BON RETOUR PARMI NOUS</p><h2>Connectez-vous</h2><p className="muted">Retrouvez vos tunnels et leurs résultats.</p><form onSubmit={submit} className="form-stack"><label>Email<input value={email} onChange={e => setEmail(e.target.value)} type="email" autoComplete="email" required /></label><label>Mot de passe<div className="password-field"><input value={password} onChange={e => setPassword(e.target.value)} type={show ? "text" : "password"} autoComplete="current-password" required /><button type="button" onClick={() => setShow(!show)} aria-label="Afficher le mot de passe">{show ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></label>{error && <p className="form-error">{error}</p>}<button className="button button-primary button-large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={19} /> : <>Se connecter <ArrowRight size={18} /></>}</button></form>{demo && <div className="demo-note"><strong>Compte de démonstration</strong><span>Les identifiants sont déjà renseignés.</span></div>}</div></section>
-  </main>;
+  return <AuthLayout eyebrow="BON RETOUR PARMI NOUS" title="Connectez-vous" lead="Retrouvez vos tunnels et leurs résultats.">
+    <form onSubmit={submit} className="form-stack"><label>Email<input value={email} onChange={e => setEmail(e.target.value)} type="email" autoComplete="email" required /></label><label>Mot de passe<div className="password-field"><input value={password} onChange={e => setPassword(e.target.value)} type={show ? "text" : "password"} autoComplete="current-password" required /><button type="button" onClick={() => setShow(!show)} aria-label="Afficher le mot de passe">{show ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></label><Link href="/forgot-password" className="text-link auth-link auth-link-end">Mot de passe oublié ?</Link>{error && <p className="form-error">{error}</p>}<button className="button button-primary button-large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={19} /> : <>Se connecter <ArrowRight size={18} /></>}</button></form>{demo && <div className="demo-note"><strong>Compte de démonstration</strong><span>Les identifiants sont déjà renseignés.</span></div>}
+  </AuthLayout>;
 }

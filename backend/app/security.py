@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -38,6 +39,15 @@ def create_token(user: User) -> str:
         "exp": datetime.now(timezone.utc) + timedelta(hours=12),
     }
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def new_link_token() -> str:
+    """Jeton des liens par e-mail : envoye tel quel, conserve seulement haché."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_link_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def current_user(
