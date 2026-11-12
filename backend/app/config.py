@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     # Adresse publique du site : lien canonique et apercu de lien.
     site_url: str = "http://localhost:3000"
+    # Envoi des e-mails (invitations, mot de passe oublie). Vide : les liens
+    # sont ecrits dans les logs de l'API.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-6-luna"
     openai_timeout_seconds: float = 90.0

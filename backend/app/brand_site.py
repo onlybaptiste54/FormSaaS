@@ -223,6 +223,10 @@ def _declarations(css: str):
 MAX_IMAGES = 6
 MIN_IMAGE_BYTES = 4_000
 MAX_IMAGE_BYTES = 6_000_000
+# Formats matriciels seulement. Un SVG peut porter du JavaScript : servi depuis
+# notre origine par le relais, il lirait le jeton de connexion d'un utilisateur
+# qui ouvrirait son adresse directement.
+RASTER_TYPES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif", "image/avif"})
 
 _CSS_URL = re.compile(r"""url\(\s*['"]?([^)'"]+)""")
 # Les pictogrammes et les pixels de mesure ne racontent rien de la marque. Le
@@ -306,7 +310,7 @@ def usable_images(candidats: list[dict], *, client: httpx.Client, resolve=_resol
         if response.status_code >= 400:
             continue
         type_mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        if not type_mime.startswith("image/"):
+        if type_mime not in RASTER_TYPES:
             continue
         taille = response.headers.get("content-length")
         if taille and taille.isdigit() and not (MIN_IMAGE_BYTES <= int(taille) <= MAX_IMAGE_BYTES):
@@ -350,8 +354,8 @@ def fetch_image(url: str, *, transport: httpx.BaseTransport | None = None, resol
             if response.status_code >= 400:
                 raise SiteError(f"Le visuel a repondu {response.status_code}.")
             type_mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
-            if not type_mime.startswith("image/"):
-                raise SiteError("Cette adresse ne renvoie pas une image.")
+            if type_mime not in RASTER_TYPES:
+                raise SiteError("Cette adresse ne renvoie pas une image png, jpeg, webp, gif ou avif.")
             contenu = response.content[:MAX_IMAGE_BYTES]
             if len(contenu) < MIN_IMAGE_BYTES:
                 raise SiteError("Ce visuel est trop leger pour etre utilise.")

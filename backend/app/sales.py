@@ -871,9 +871,9 @@ def record_event(db: Session, tunnel: Tunnel, page: Page, sid: str, kind: str, s
     inserted = db.execute(statement).rowcount > 0
     if inserted:
         if kind == "page_view":
-            page.visits += 1
+            page.visits = Page.visits + 1
         elif kind in {"step_click", "goal_click"}:
-            page.conversions += 1
+            page.conversions = Page.conversions + 1
     return inserted
 
 

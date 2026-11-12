@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -38,6 +39,15 @@ def create_token(user: User) -> str:
         "exp": datetime.now(timezone.utc) + timedelta(hours=12),
     }
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def new_link_token() -> str:
+    """Jeton des liens par e-mail : envoye tel quel, conserve seulement haché."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_link_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def current_user(
@@ -91,9 +101,10 @@ _SWEEP_ABOVE = 2048
 def client_ip(request: Request) -> str:
     """Adresse vue par l'API.
 
-    `X-Forwarded-For` n'est pas lu : n'importe qui peut l'écrire, et la limite
-    deviendrait contournable. Derrière un proxy, lancer uvicorn avec
-    --proxy-headers et --forwarded-allow-ips pour que cette adresse soit juste.
+    `X-Forwarded-For` n'est pas lu ici : n'importe qui peut l'écrire, et la
+    limite deviendrait contournable. C'est uvicorn qui le lit, et seulement
+    quand la connexion vient d'une adresse de FORWARDED_ALLOW_IPS : le conteneur
+    web, qui relaie les tunnels et les visuels, et le reverse proxy s'il y en a un.
     """
     return request.client.host if request.client else "inconnu"
 

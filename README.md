@@ -29,7 +29,7 @@ docker compose down
 
 Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour repartir de zéro, utiliser explicitement `docker compose down -v`.
 
-Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les réglages de remerciement sont portés par la page du tunnel ; l’ancien champ du formulaire est migré puis conservé vide, avec un alias API pour les clients existants. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
+Le schéma est géré par Alembic (scripts dans `backend/app/migrations/versions`) et appliqué au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL (`BEGIN IMMEDIATE` sur SQLite) : une base neuve reçoit toutes les révisions ; une base qui a déjà `alembic_version` reçoit celles qui lui manquent ; une base existante sans `alembic_version` subit une fois la reprise historique décrite ci-dessous, est marquée à la révision de base `0001`, puis reçoit les révisions suivantes. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les réglages de remerciement sont portés par la page du tunnel ; l’ancien champ du formulaire est migré puis conservé vide, avec un alias API pour les clients existants. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
 
 ## Fonctionnalités livrées
 
@@ -47,6 +47,7 @@ Le schéma est créé et repris au démarrage par `initialize_schema()`, sous ve
 - Mesure de parcours sans donnée personnelle : ni adresse IP ni user-agent enregistrés, événements dédupliqués par session et par étape, et oubliés au-delà de treize mois
 - Le clic final mène vers une adresse HTTPS externe ; Sillage n’encaisse aucun paiement et ne peut pas confirmer une vente ou réservation externe. L’export HTML fonctionne sans les statistiques Sillage.
 - Connexion sécurisée par jeton, tentatives limitées et rôles appliqués sur chaque écriture
+- Invitations de collègues par e-mail (lien personnel valable 7 jours, rôle choisi par l'administrateur) et mot de passe oublié (lien valable une heure, à usage unique)
 - Profil de marque : logo, palette, police, ton et règles, déduits d’une charte importée puis validés
 - Création par brief avec Luna via l’API OpenAI Responses : une génération écrit directement le document HTML/CSS complet
 - Un document HTML/CSS par page, assaini avant stockage puis rendu dans la même iframe isolée pour l’éditeur, la page publique et les vignettes
@@ -100,6 +101,10 @@ Variables principales :
 | `POSTGRES_USER` | `sillage` |
 | `POSTGRES_PASSWORD` | `sillage_dev` |
 | `SECRET_KEY` | clé de développement, refusée si `ENVIRONMENT=production` |
+| `SMTP_HOST` | vide : les liens d'invitation et de réinitialisation sont écrits dans les logs de l'API |
+| `SMTP_PORT` | `587` (STARTTLS) ; `465` pour SSL ; tout autre port reste sans chiffrement, par exemple `1025` pour Mailpit en local |
+| `SMTP_USER`, `SMTP_PASSWORD` | vides : pas d'authentification |
+| `SMTP_FROM` | vide : l'adresse `SMTP_USER` sert d'expéditeur |
 | `OPENAI_API_KEY` | vide : Luna utilise le générateur local |
 | `OPENAI_MODEL` | `gpt-6-luna` |
 | `OPENAI_TIMEOUT_SECONDS` | `90` |
@@ -126,12 +131,14 @@ Créer le premier administrateur, une seule fois :
 docker compose exec api python -m app.admin --email vous@exemple.fr --company "Votre entreprise"
 ```
 
-Le mot de passe est demandé sans être affiché ; il doit faire 12 caractères au minimum. Pour un déploiement automatisé, le passer par `ADMIN_PASSWORD` plutôt que par `--password`, qui resterait dans l'historique du shell. La commande crée l'entreprise et son administrateur, et refuse de s'exécuter dès qu'un compte existe : elle ne peut pas servir à s'ajouter à une installation en service. Les membres suivants s'ajouteront par le parcours d'invitation, qui reste à construire.
+Le mot de passe est demandé sans être affiché ; il doit faire 12 caractères au minimum. Pour un déploiement automatisé, le passer par `ADMIN_PASSWORD` plutôt que par `--password`, qui resterait dans l'historique du shell. La commande crée l'entreprise et son administrateur, et refuse de s'exécuter dès qu'un compte existe : elle ne peut pas servir à s'ajouter à une installation en service. Les membres suivants arrivent par invitation : il n'y a pas d'inscription ouverte. Un administrateur ouvre la page Équipe, saisit l'adresse et le rôle (administrateur, créateur ou lecteur), et la personne reçoit par e-mail un lien valable 7 jours. Elle y choisit son nom et son mot de passe, puis entre directement dans l'entreprise. Renvoyer une invitation à la même adresse remplace la précédente, et l'administrateur peut la révoquer tant qu'elle n'est pas acceptée. Sans `SMTP_HOST`, les liens d'invitation et de réinitialisation apparaissent dans les logs de l'API : quiconque peut lire ces logs peut s'en servir.
 
 Deux limites à connaître avant d'ouvrir au public :
 
 - **La limitation de débit est comptée en mémoire, par processus.** L'image lance deux workers, donc les seuils réels sont doublés. Au-delà d'un petit trafic, il faudra un compteur partagé.
-- **`X-Forwarded-For` n'est pas lu**, parce qu'une limite qu'un en-tête suffit à contourner n'en est pas une. Derrière un reverse proxy, toutes les requêtes porteraient donc l'adresse du proxy : lancer uvicorn avec `--proxy-headers --forwarded-allow-ips=<adresse du proxy>` le jour où un proxy est ajouté.
+- **`X-Forwarded-For` n'est cru que s'il vient d'une adresse de confiance.** Les tunnels publics (`/t/...`) et les visuels de marque (`/media/brand`) passent par le serveur Next, qui transmet l'adresse du visiteur à l'API. Dans `compose.yaml`, le conteneur web a une adresse fixe (`172.30.42.10`, réseau `relais`) et l'API ne croit que celle-là (`FORWARDED_ALLOW_IPS`). Un appel direct à l'API garde sa propre adresse, même s'il envoie l'en-tête.
+- **En production, placer un reverse proxy devant le conteneur web, qui écrase `X-Forwarded-For`** (Caddy le fait par défaut ; avec nginx, `proxy_set_header X-Forwarded-For $remote_addr`). Sans lui, un visiteur peut annoncer l'adresse de son choix et contourner la limite des tunnels publics. Si ce proxy sert aussi l'API, ajouter son adresse : `FORWARDED_ALLOW_IPS=172.30.42.10,<adresse du proxy>`.
+- **Mise à jour d'une installation existante** : le réseau `relais` est nouveau. Lancer `docker compose down` puis `docker compose up -d --build` (sans `-v` : les données restent). Si le sous-réseau `172.30.42.0/24` est déjà pris sur la machine, le changer à la fois dans `networks`, `ipv4_address` et `FORWARDED_ALLOW_IPS`.
 
 ## Développement sans Docker
 
@@ -146,6 +153,15 @@ uvicorn app.main:app --reload
 ```
 
 Sans `DATABASE_URL`, l’API utilise SQLite pour simplifier le développement local.
+
+Chaque changement de modèle (`backend/app/models.py`) demande une révision Alembic :
+
+```bash
+cd backend
+alembic revision --autogenerate -m "ajoute la table x"
+```
+
+Relire le script généré, puis lancer l’API : la révision s’applique au démarrage. Le test `tests/test_alembic.py` échoue tant qu’un modèle diffère des révisions.
 
 Frontend :
 

@@ -1,6 +1,9 @@
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import MetaData, create_engine, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -31,8 +34,28 @@ JSON_DEFAULTS = {"fields": "[]", "design": "{}", "content": "{}", "thank_you": "
 DROPPED_CAMPAIGN_COLUMNS = ("slug", "description", "kind", "status", "visibility", "fields", "design", "content", "thank_you", "draft", "brief", "visits")
 
 
+# Revision qui decrit le schema atteint par la reprise historique (`upgrade`).
+BASELINE_REVISION = "0001"
+
+# Tables de ce schema de base. Une table ajoutee plus tard vient d'une revision
+# Alembic, jamais de la reprise historique : elle y serait creee deux fois.
+BASELINE_TABLES = (
+    "companies", "templates", "users", "campaigns", "forms", "tunnels", "form_versions",
+    "pages", "responses", "page_variants", "page_versions", "tunnel_events",
+)
+
+
+def alembic_config(connection) -> Config:
+    """Configuration construite ici : l'image Docker n'embarque pas d'alembic.ini."""
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
+    # env.py reutilise cette connexion, donc la transaction et le verrou en cours.
+    config.attributes["connection"] = connection
+    return config
+
+
 def initialize_schema():
-    """Create and upgrade the MVP schema once, even with multiple API workers."""
+    """Create and upgrade the schema once, even with multiple API workers."""
     with engine.begin() as connection:
         if engine.dialect.name == "postgresql":
             connection.execute(text("SELECT pg_advisory_xact_lock(736455141)"))
@@ -41,7 +64,13 @@ def initialize_schema():
             # premier DDL. Sans BEGIN explicite, un échec laisse une table
             # reconstruite à moitié et une reprise impossible.
             connection.exec_driver_sql("BEGIN IMMEDIATE")
-        upgrade(connection)
+        inspector = inspect(connection)
+        config = alembic_config(connection)
+        if not inspector.has_table("alembic_version") and any(inspector.has_table(name) for name in BASELINE_TABLES):
+            # Base d'avant Alembic : reprise historique une fois, puis marquee au schema de base.
+            upgrade(connection)
+            command.stamp(config, BASELINE_REVISION)
+        command.upgrade(config, "head")
         purge_old_events(connection)
 
 
@@ -81,6 +110,9 @@ def upgrade(connection):
     # lorsque la migration est invoquee sans avoir importe l'API.
     from . import models  # noqa: F401
 
+    # Reprise historique, figee au schema de base : les evolutions suivantes sont
+    # des revisions Alembic (app/migrations/versions).
+
     campaign_columns = columns_of(connection, "campaigns")
     # Une base d'avant la separation : `campaigns` porte encore le formulaire.
     legacy = "fields" in campaign_columns
@@ -89,7 +121,7 @@ def upgrade(connection):
         for column in ("design", "content", "draft", "brief"):
             add_column(connection, "campaigns", column, "JSON")
 
-    Base.metadata.create_all(bind=connection)
+    Base.metadata.create_all(bind=connection, tables=[table for table in Base.metadata.sorted_tables if table.name in BASELINE_TABLES])
 
     add_column(connection, "companies", "logo", "TEXT DEFAULT ''")
     add_column(connection, "companies", "brand", "JSON")

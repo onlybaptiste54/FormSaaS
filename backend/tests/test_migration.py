@@ -143,7 +143,7 @@ def test_existing_form_rows_gain_pages_without_changing_their_data(monkeypatch):
     monkeypatch.setattr(database, "engine", engine)
     try:
         models.Base.metadata.create_all(engine, tables=[
-            table for table in models.Base.metadata.sorted_tables if table.name not in {"pages", "form_versions"}
+            table for table in models.Base.metadata.sorted_tables if table.name in database.BASELINE_TABLES and table.name not in {"pages", "form_versions"}
         ])
         now = datetime(2024, 5, 1, tzinfo=timezone.utc)
         with engine.begin() as connection:
@@ -246,7 +246,7 @@ def test_lot1_pages_become_tunnel_pages_without_losing_data(monkeypatch):
 
     monkeypatch.setattr(database, "engine", engine)
     try:
-        tables = [table for table in models.Base.metadata.sorted_tables if table.name not in {"pages", "tunnels"}]
+        tables = [table for table in models.Base.metadata.sorted_tables if table.name in database.BASELINE_TABLES and table.name not in {"pages", "tunnels"}]
         models.Base.metadata.create_all(engine, tables=tables)
         with engine.begin() as connection:
             connection.exec_driver_sql("""
@@ -333,7 +333,7 @@ def test_failed_sqlite_upgrade_rolls_back_page_rebuild(monkeypatch):
     monkeypatch.setattr(database, "engine", engine)
     try:
         models.Base.metadata.create_all(engine, tables=[
-            table for table in models.Base.metadata.sorted_tables if table.name not in {"pages", "tunnels"}
+            table for table in models.Base.metadata.sorted_tables if table.name in database.BASELINE_TABLES and table.name not in {"pages", "tunnels"}
         ])
         with engine.begin() as connection:
             connection.exec_driver_sql("""

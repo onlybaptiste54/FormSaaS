@@ -26,9 +26,21 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
       SITE_URL: ${SITE_URL:-http://localhost:${WEB_PORT:-3000}}
+      # Envoi des e-mails (invitations, mot de passe oublie). Vide : les liens vont dans les logs de l'API.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
       OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-90}
+      # Seul le conteneur web peut annoncer l'adresse d'un visiteur (X-Forwarded-For).
+      # Derriere un reverse proxy : FORWARDED_ALLOW_IPS=172.30.42.10,<adresse du proxy>.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.30.42.10}
+    networks:
+      - default
+      - relais
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -49,16 +61,26 @@ services:
         API_INTERNAL_URL: http://api:8000
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}/api
-      # Adresse de l'API vue depuis le conteneur web, pour le relais des visuels.
+      # Adresse de l'API vue depuis le conteneur web, pour les relais des tunnels et des visuels.
       API_INTERNAL_URL: http://api:8000
       # Adresse publique du site, pour les liens absolus du sitemap et des aperçus.
       SITE_URL: ${SITE_URL:-http://localhost:${WEB_PORT:-3000}}
+    # Adresse fixe : c'est elle que l'API croit quand elle lit X-Forwarded-For.
+    networks:
+      relais:
+        ipv4_address: 172.30.42.10
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
+
+networks:
+  relais:
+    ipam:
+      config:
+        - subnet: 172.30.42.0/24
 
 volumes:
   postgres_data:

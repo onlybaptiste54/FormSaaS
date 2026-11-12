@@ -15,3 +15,5 @@ bleach[css]==6.4.0
 # brand_site.py l'importe directement. bleach[css] le tire aujourd'hui en
 # transitif, mais un changement d'extra chez bleach casserait le demarrage.
 tinycss2==1.5.1
+# Migrations de schema (app/migrations). Epingle pour un build reproductible.
+alembic==1.20.1

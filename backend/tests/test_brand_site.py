@@ -191,10 +191,12 @@ def test_usable_images_drops_what_does_not_exist_or_weighs_nothing():
             return httpx.Response(200, headers={"content-type": "text/html"})
         if chemin.endswith("pixel.jpg"):
             return httpx.Response(200, headers={"content-type": "image/jpeg", "content-length": "80"})
+        if chemin.endswith("logo.svg"):
+            return httpx.Response(200, headers={"content-type": "image/svg+xml", "content-length": "250000"})
         return httpx.Response(200, headers={"content-type": "image/jpeg", "content-length": "250000"})
 
     candidats = [{"url": f"https://smartduck.fr/{nom}", "alt": ""} for nom in
-                 ("absente.jpg", "page.jpg", "pixel.jpg", "vraie.jpg", "autre.jpg")]
+                 ("absente.jpg", "page.jpg", "pixel.jpg", "logo.svg", "vraie.jpg", "autre.jpg")]
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         gardees = usable_images(candidats, client=client, resolve=PUBLIC)
     assert [g["url"].rsplit("/", 1)[-1] for g in gardees] == ["vraie.jpg", "autre.jpg"]
@@ -245,10 +247,15 @@ def test_fetch_image_refuses_what_is_not_an_image():
             return httpx.Response(200, headers={"content-type": "text/html"}, content=b"x" * 9000)
         if request.url.path.endswith("minuscule.png"):
             return httpx.Response(200, headers={"content-type": "image/png"}, content=b"x" * 10)
+        if request.url.path.endswith("piege.svg"):
+            # Un SVG peut porter du JavaScript : le relais ne doit jamais le servir.
+            return httpx.Response(200, headers={"content-type": "image/svg+xml"},
+                                  content=b"<svg onload='alert(1)'>" + b" " * 9000 + b"</svg>")
         return httpx.Response(200, headers={"content-type": "image/png"}, content=b"x" * 9000)
 
     transport = httpx.MockTransport(handler)
-    for mauvais in ("https://smartduck.fr/page.html", "https://smartduck.fr/minuscule.png"):
+    for mauvais in ("https://smartduck.fr/page.html", "https://smartduck.fr/minuscule.png",
+                    "https://smartduck.fr/piege.svg"):
         with pytest.raises(SiteError):
             fetch_image(mauvais, transport=transport, resolve=PUBLIC)
     contenu, type_mime = fetch_image("https://smartduck.fr/vraie.png", transport=transport, resolve=PUBLIC)
