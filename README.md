@@ -29,7 +29,7 @@ docker compose down
 
 Les données PostgreSQL restent dans le volume `sillage_postgres_data`. Pour repartir de zéro, utiliser explicitement `docker compose down -v`.
 
-Le schéma est créé et repris au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les réglages de remerciement sont portés par la page du tunnel ; l’ancien champ du formulaire est migré puis conservé vide, avec un alias API pour les clients existants. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
+Le schéma est géré par Alembic (scripts dans `backend/app/migrations/versions`) et appliqué au démarrage par `initialize_schema()`, sous verrou d’avis PostgreSQL (`BEGIN IMMEDIATE` sur SQLite) : une base neuve reçoit toutes les révisions ; une base qui a déjà `alembic_version` reçoit celles qui lui manquent ; une base existante sans `alembic_version` subit une fois la reprise historique décrite ci-dessous, est marquée à la révision de base `0001`, puis reçoit les révisions suivantes. Une base antérieure à la séparation campagne / formulaire est migrée une seule fois : chaque campagne devient un dossier plus un formulaire qui **garde son identifiant et son slug**, les réponses et l’historique sont rattachés au formulaire, puis les colonnes devenues inutiles sont supprimées dans la même transaction. La reprise suivante ajoute à chaque formulaire une page HTML et une page de remerciement, puis un tunnel initial qui conserve ces pages. Les réglages de remerciement sont portés par la page du tunnel ; l’ancien champ du formulaire est migré puis conservé vide, avec un alias API pour les clients existants. Les liens publics déjà diffusés, les réponses collectées et les exports restent valides. Une sauvegarde vérifiée reste nécessaire avant toute migration de production.
 
 ## Fonctionnalités livrées
 
@@ -148,6 +148,15 @@ uvicorn app.main:app --reload
 ```
 
 Sans `DATABASE_URL`, l’API utilise SQLite pour simplifier le développement local.
+
+Chaque changement de modèle (`backend/app/models.py`) demande une révision Alembic :
+
+```bash
+cd backend
+alembic revision --autogenerate -m "ajoute la table x"
+```
+
+Relire le script généré, puis lancer l’API : la révision s’applique au démarrage. Le test `tests/test_alembic.py` échoue tant qu’un modèle diffère des révisions.
 
 Frontend :
 
