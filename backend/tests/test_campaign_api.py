@@ -410,7 +410,7 @@ def test_tunnel_page_create_supports_blank_templates_and_page_previews(client):
 
 
 def test_luna_can_edit_and_publish_a_tunnel_landing(client, monkeypatch):
-    from app import main
+    from app import forms
     from app.config import settings
 
     campaign = client.post("/api/campaigns", json={"name": "Page Luna"}).json()
@@ -424,7 +424,7 @@ def test_luna_can_edit_and_publish_a_tunnel_landing(client, monkeypatch):
         assert kwargs["selection"]["page_role"] == "landing"
         return {"message": "Accueil mis à jour.", "html": html.replace("Bienvenue", "Bonjour").replace("Accueil", "Bonjour"), "region": None}
 
-    monkeypatch.setattr(main, "revise_page", fake_revision)
+    monkeypatch.setattr(forms, "revise_page", fake_revision)
     revised = client.post(f"/api/forms/{form['id']}/luna/refine", json={
         "instruction": "Change le titre", "page_id": landing["id"],
     })
@@ -529,7 +529,7 @@ def test_archiving_a_campaign_hides_its_forms_without_losing_responses(client):
 
 
 def test_luna_revision_lands_in_the_draft_with_its_version(client, monkeypatch):
-    from app import main
+    from app import forms
     from app.config import settings
 
     form = active_form(client)
@@ -546,7 +546,7 @@ def test_luna_revision_lands_in_the_draft_with_its_version(client, monkeypatch):
             "region": None,
         }
 
-    monkeypatch.setattr(main, "revise_page", fake_revision)
+    monkeypatch.setattr(forms, "revise_page", fake_revision)
     response = client.post(f"/api/forms/{form['id']}/luna/refine", json={
         "instruction": "Renomme le bouton",
         "element_ids": ["submit"],
@@ -568,7 +568,7 @@ def test_luna_revision_lands_in_the_draft_with_its_version(client, monkeypatch):
 
 
 def test_luna_creation_stores_a_free_document_when_connected(client, monkeypatch):
-    from app import main
+    from app import forms
     from app.config import settings
 
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
@@ -582,7 +582,7 @@ def test_luna_creation_stores_a_free_document_when_connected(client, monkeypatch
         assert kwargs["website_url"] == "https://atelier.example/"
         return {"message": "Page créée", "html": document, "region": None}
 
-    monkeypatch.setattr(main, "generate_page", generate_page)
+    monkeypatch.setattr(forms, "generate_page", generate_page)
     campaign = client.post("/api/campaigns", json={"name": "Page libre"}).json()
     created = client.post(f"/api/campaigns/{campaign['id']}/forms", json={
         "prompt": "Une vitrine avec un formulaire en bas",
@@ -601,7 +601,7 @@ def test_luna_creation_stores_a_free_document_when_connected(client, monkeypatch
 def test_luna_stream_previews_then_stores_only_the_validated_page(client, monkeypatch):
     import json
 
-    from app import main
+    from app import forms
     from app.config import settings
 
     form = active_form(client)
@@ -611,7 +611,7 @@ def test_luna_stream_previews_then_stores_only_the_validated_page(client, monkey
         yield {"type": "preview", "html": "<main><h1>En cours", "region": None}
         yield {"type": "final", "message": "Page terminée.", "html": html.replace("</form>", '<p>Page terminée</p></form>'), "region": None}
 
-    monkeypatch.setattr(main, "stream_page_revision", fake_stream)
+    monkeypatch.setattr(forms, "stream_page_revision", fake_stream)
     response = client.post(f"/api/forms/{form['id']}/luna/refine/stream", json={"instruction": "Ajoute un message en bas"})
     assert response.status_code == 200, response.text
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
@@ -747,7 +747,7 @@ DOCUMENT_LIBRE = (
 
 def test_a_page_keeps_the_identity_it_was_born_with(client, monkeypatch):
     """Changer les couleurs du compte ne doit plus deriver les pages existantes."""
-    from app import main
+    from app import forms
     from app.config import settings
 
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
@@ -757,7 +757,7 @@ def test_a_page_keeps_the_identity_it_was_born_with(client, monkeypatch):
         vues.append(args[1])
         return {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}
 
-    monkeypatch.setattr(main, "generate_page", generate_page)
+    monkeypatch.setattr(forms, "generate_page", generate_page)
     campaign = client.post("/api/campaigns", json={"name": "Identité figée"}).json()
     form = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "Une page de contact"}).json()
     couleur_origine = vues[0]["primary_color"]
@@ -768,7 +768,7 @@ def test_a_page_keeps_the_identity_it_was_born_with(client, monkeypatch):
             vues.append(identity)
             return {"message": "Fait.", "html": html, "region": None}
 
-        monkeypatch.setattr(main, "revise_page", fake_revision)
+        monkeypatch.setattr(forms, "revise_page", fake_revision)
         client.post(f"/api/forms/{form['id']}/luna/refine", json={"instruction": "Change le titre"})
     finally:
         client.patch("/api/company", json={"primary_color": couleur_origine, "name": vues[0]["name"]})
@@ -779,7 +779,7 @@ def test_a_page_keeps_the_identity_it_was_born_with(client, monkeypatch):
 
 def test_creating_without_the_brand_applies_no_identity_at_all(client, monkeypatch):
     """Decocher la marque retirait le profil mais gardait nom, ton et couleurs."""
-    from app import main
+    from app import forms
     from app.config import settings
 
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
@@ -789,7 +789,7 @@ def test_creating_without_the_brand_applies_no_identity_at_all(client, monkeypat
         vues.append(args[1])
         return {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}
 
-    monkeypatch.setattr(main, "generate_page", generate_page)
+    monkeypatch.setattr(forms, "generate_page", generate_page)
     campaign = client.post("/api/campaigns", json={"name": "Sans marque"}).json()
     form = client.post(f"/api/campaigns/{campaign['id']}/forms",
                        json={"prompt": "Une page neutre", "use_brand": False}).json()
@@ -799,14 +799,14 @@ def test_creating_without_the_brand_applies_no_identity_at_all(client, monkeypat
         vues.append(identity)
         return {"message": "Fait.", "html": html, "region": None}
 
-    monkeypatch.setattr(main, "revise_page", fake_revision)
+    monkeypatch.setattr(forms, "revise_page", fake_revision)
     client.post(f"/api/forms/{form['id']}/luna/refine", json={"instruction": "Change le titre"})
     assert vues[1] == {}, "un choix explicite de ne pas appliquer d'identite doit le rester"
 
 
 def test_creating_with_a_client_site_applies_that_brand_not_yours(client, monkeypatch):
     """Une page faite pour un tiers ne doit rien porter de la marque du compte."""
-    from app import main
+    from app import forms
     from app.config import settings
 
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
@@ -815,12 +815,12 @@ def test_creating_with_a_client_site_applies_that_brand_not_yours(client, monkey
               "summary": "Une identité violette et médicale."}
     vues = []
 
-    monkeypatch.setattr(main, "read_site", lambda url: {"url": url, "title": "smartduck : épilation laser",
+    monkeypatch.setattr(forms, "read_site", lambda url: {"url": url, "title": "smartduck : épilation laser",
                                                         "colors": [{"value": "#5b2d8b", "count": 9, "roles": ["fond"]}],
                                                         "fonts": [], "headings": [], "description": "",
                                                         "stylesheets_read": 2})
-    monkeypatch.setattr(main, "analyze_site_brand", lambda facts, identity, **kwargs: profil)
-    monkeypatch.setattr(main, "generate_page", lambda *args, **kwargs: (vues.append(args[1]) or
+    monkeypatch.setattr(forms, "analyze_site_brand", lambda facts, identity, **kwargs: profil)
+    monkeypatch.setattr(forms, "generate_page", lambda *args, **kwargs: (vues.append(args[1]) or
                                                                        {"message": "Page créée", "html": DOCUMENT_LIBRE, "region": None}))
 
     campaign = client.post("/api/campaigns", json={"name": "Pour un client"}).json()
@@ -839,7 +839,7 @@ def test_creating_with_a_client_site_applies_that_brand_not_yours(client, monkey
         vues.append(identity)
         return {"message": "Fait.", "html": html, "region": None}
 
-    monkeypatch.setattr(main, "revise_page", fake_revision)
+    monkeypatch.setattr(forms, "revise_page", fake_revision)
     client.post(f"/api/forms/{created.json()['id']}/luna/refine", json={"instruction": "Change le titre"})
     assert vues[1]["name"] == "smartduck"
 
@@ -857,7 +857,7 @@ def test_creating_with_a_client_site_requires_its_address(client, monkeypatch):
 
 def test_a_question_gets_an_answer_and_leaves_the_page_untouched(client, monkeypatch):
     """Une question n'est pas un ordre de refonte : la page ne doit pas bouger."""
-    from app import main
+    from app import forms
     from app.config import settings
 
     form = active_form(client)
@@ -869,7 +869,7 @@ def test_a_question_gets_an_answer_and_leaves_the_page_untouched(client, monkeyp
         return {"message": "Le vide vient de la marge du bloc. Vous voulez que je la réduise ?",
                 "html": "", "region": None}
 
-    monkeypatch.setattr(main, "revise_page", fake_revision)
+    monkeypatch.setattr(forms, "revise_page", fake_revision)
     reponse = client.post(f"/api/forms/{form['id']}/luna/refine",
                           json={"instruction": "Pourquoi il y a du vide en dessous du formulaire ?"})
     assert reponse.status_code == 200, reponse.text

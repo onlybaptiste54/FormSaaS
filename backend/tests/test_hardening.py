@@ -102,7 +102,7 @@ def test_development_keeps_the_quick_start_working(monkeypatch):
 
 
 def test_only_failed_logins_count(client):
-    from app.main import LOGIN_FAILURES
+    from app.account import LOGIN_FAILURES
 
     good = {"email": "demo@sillage.fr", "password": "demo1234"}
     for _ in range(LOGIN_FAILURES + 5):
@@ -120,7 +120,7 @@ def test_only_failed_logins_count(client):
 
 
 def test_public_submissions_are_capped(client):
-    from app.main import SUBMISSIONS
+    from app.public_forms import SUBMISSIONS
 
     payload = {"answers": {"email": "visiteur@exemple.fr"}, "consent": True}
     for attempt in range(SUBMISSIONS):
@@ -136,7 +136,7 @@ def test_the_image_relay_is_capped(client, monkeypatch):
     signee compte aussi. Le plafond est abaisse ici pour ne pas tirer trois
     cents requetes dans un test.
     """
-    monkeypatch.setattr("app.main.BRAND_IMAGES", 3)
+    monkeypatch.setattr("app.account.BRAND_IMAGES", 3)
     for attempt in range(3):
         refused = client.get("/api/brand/image", params={"u": "https://exemple.fr/logo.png", "s": "fausse"})
         assert refused.status_code == 404, f"appel {attempt}"
@@ -148,13 +148,13 @@ def test_the_image_relay_is_capped(client, monkeypatch):
 def test_the_relay_never_fetches_without_a_valid_signature(client, monkeypatch):
     """Signature fausse : 404 avant tout appel sortant.
 
-    Le nom est remplace dans app.main, ou il est importe : le patcher dans
+    Le nom est remplace dans app.account, ou il est importe : le patcher dans
     app.brand_site ne changerait rien et ce test passerait a vide.
     """
     def jamais(*_args, **_kwargs):
         raise AssertionError("fetch_image ne doit pas etre appele sans signature valide")
 
-    monkeypatch.setattr("app.main.fetch_image", jamais)
+    monkeypatch.setattr("app.account.fetch_image", jamais)
     assert client.get("/api/brand/image", params={"u": "https://exemple.fr/x.png", "s": "fausse"}).status_code == 404
 
 
@@ -163,7 +163,7 @@ def test_the_relay_serves_an_image_that_can_never_run(client, monkeypatch):
     from app.brand_site import sign_image
     from app.config import settings
 
-    monkeypatch.setattr("app.main.fetch_image", lambda _url: (b"x" * 9000, "image/png"))
+    monkeypatch.setattr("app.account.fetch_image", lambda _url: (b"x" * 9000, "image/png"))
     url = "https://exemple.fr/logo.png"
     reponse = client.get("/api/brand/image", params={"u": url, "s": sign_image(url, settings.secret_key)})
     assert reponse.status_code == 200
@@ -192,7 +192,7 @@ def test_each_visitor_behind_the_web_relay_keeps_their_own_quota(client, monkeyp
     web_ip = re.search(r"ipv4_address: ([\d.]+)", compose).group(1)
     assert f"FORWARDED_ALLOW_IPS: ${{FORWARDED_ALLOW_IPS:-{web_ip}}}" in compose
 
-    monkeypatch.setattr("app.main.BRAND_IMAGES", 2)
+    monkeypatch.setattr("app.account.BRAND_IMAGES", 2)
     params = {"u": "https://exemple.fr/logo.png", "s": "fausse"}
     derriere = ProxyHeadersMiddleware(app, trusted_hosts=web_ip)
 
@@ -220,7 +220,7 @@ def test_tinycss2_is_declared(client):
 
 def test_the_window_counts_per_usage(client):
     """Saturer la connexion ne ferme pas la collecte, et inversement."""
-    from app.main import LOGIN_FAILURES
+    from app.account import LOGIN_FAILURES
 
     for _ in range(LOGIN_FAILURES):
         client.post("/api/auth/login", json={"email": "demo@sillage.fr", "password": "faux"})
