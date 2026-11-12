@@ -19,7 +19,7 @@ from sqlalchemy import Text, cast, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
-from .config import settings
+from .config import is_production, settings
 from .database import SessionLocal, get_db, initialize_schema
 from .brand_site import SiteError, fetch_image, proxy_path, read_site, sign_image, site_name
 from .luna import LunaAPIError, analyze_brand, analyze_site_brand, default_content, default_design, generate_campaign, generate_page, merge_page_region, revise_page, slugify, stream_page_revision
@@ -468,7 +468,7 @@ def page_identity(form: Form) -> dict:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "demo": not is_production()}
 
 
 @app.post("/api/auth/login")
@@ -1307,7 +1307,7 @@ def use_saved_template(template_id: str, data: TemplateUse, db: Session = Depend
         raise HTTPException(404, "Modèle introuvable")
     campaign = owned_campaign(data.campaign_id, db, user)
     form = form_from_template(db, saved_template_json(template), user, campaign)
-    template.uses += 1
+    template.uses = Template.uses + 1
     db.add(form)
     create_form_pages(db, form)
     db.commit()
@@ -1398,17 +1398,24 @@ def export_responses_csv(
     return csv_response(rows, "reponses.csv", with_form=True)
 
 
+def csv_safe(value):
+    """Un texte qui commence comme une formule serait exécuté par Excel : on le neutralise."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
+
+
 def csv_response(rows: list[FormResponse], filename: str, *, with_form: bool = False):
     keys = list(dict.fromkeys(k for r in rows for k in r.answers.keys()))
     head = ["date", "campagne", "formulaire", "source", "consent"] if with_form else ["date", "source", "consent"]
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=[*head, *keys])
+    writer = csv.DictWriter(buffer, fieldnames=[*head, *[csv_safe(k) for k in keys]])
     writer.writeheader()
     for r in rows:
         row = {"date": r.created_at.isoformat(), "source": r.source, "consent": r.consent, **r.answers}
         if with_form:
             row |= {"campagne": r.form.campaign.name, "formulaire": r.form.name}
-        writer.writerow(row)
+        writer.writerow({csv_safe(k): csv_safe(v) for k, v in row.items()})
     return StreamingResponse(iter([buffer.getvalue().encode("utf-8-sig")]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
@@ -1485,9 +1492,9 @@ def track_visit(slug: str, request: Request, response: Response, data: PublicPag
         raise HTTPException(403, "Étape inaccessible")
     visited = list(previous.get("visited", [])) if previous else []
     if page.id not in visited:
-        page.visits += 1
+        page.visits = Page.visits + 1
         if page.role == "form":
-            form.visits += 1
+            form.visits = Form.visits + 1
         visited.append(page.id)
         db.commit()
     response_id = previous.get("response_id") if previous else None
@@ -1519,10 +1526,10 @@ def advance_public_page(slug: str, data: PublicPageAdvance, request: Request, re
         raise HTTPException(422, "Le remerciement suit une soumission de formulaire")
     visited = list(journey.get("visited", []))
     if target.id not in visited:
-        current.conversions += 1
-        target.visits += 1
+        current.conversions = Page.conversions + 1
+        target.visits = Page.visits + 1
         if target.role == "form":
-            form.visits += 1
+            form.visits = Form.visits + 1
         visited.append(target.id)
         db.commit()
     set_journey_cookie(response, request, {**journey, "page": target.id, "visited": visited})
@@ -1555,12 +1562,12 @@ def submit(slug: str, data: SubmitResponse, request: Request, response: Response
         raise HTTPException(422, "Le consentement est requis")
     row = FormResponse(form_id=form.id, answers=data.answers, source=data.source, promo_code=data.promo_code, consent=data.consent, consent_text=consent_text(form), ip_address=request.client.host if request.client else "", user_agent=request.headers.get("user-agent", "")[:300])
     db.add(row)
-    page.conversions += 1
+    page.conversions = Page.conversions + 1
     next_page = db.get(Page, page.next_page_id) if page.next_page_id else form_page(form, "thanks")
     if next_page and next_page.tunnel_id != tunnel.id:
         raise HTTPException(422, "La page suivante est invalide")
     if next_page:
-        next_page.visits += 1
+        next_page.visits = Page.visits + 1
     db.commit()
     visited = list(journey.get("visited", [])) if journey else [page.id]
     if next_page and next_page.id not in visited:

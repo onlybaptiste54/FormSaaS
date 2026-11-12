@@ -649,6 +649,24 @@ def test_a_public_answer_lands_in_the_inbox_of_its_campaign(client):
     client.patch(f"/api/campaigns/{campaign['id']}", json={"archived": False})
 
 
+def test_csv_export_neutralizes_spreadsheet_formulas(client):
+    campaign = client.post("/api/campaigns", json={"name": "Export sûr"}).json()
+    form = client.post(f"/api/campaigns/{campaign['id']}/forms", json={"prompt": "un formulaire de contact simple"}).json()
+    client.patch(f"/api/forms/{form['id']}", json={"status": "active"})
+
+    fields = [field for field in form["fields"] if field["type"] != "consent"]
+    assert len(fields) >= 2
+    answers = {field["id"]: "Alice" for field in fields}
+    answers[fields[0]["id"]] = '=HYPERLINK("http://x","clic")'
+    created = client.post(f"/api/public/{form['slug']}/submit", json={"answers": answers, "source": "+33 6 12 34 56 78", "consent": True})
+    assert created.status_code == 201
+
+    text = client.get("/api/responses/export.csv", params={"campaign_id": campaign["id"]}).text
+    assert "'=HYPERLINK" in text and "'+33" in text
+    assert ",=HYPERLINK" not in text and ",+33" not in text
+    assert "Alice" in text and "'Alice" not in text
+
+
 def test_submit_returns_safely_personalized_thanks_html(client):
     from app.database import SessionLocal
     from app.models import Form

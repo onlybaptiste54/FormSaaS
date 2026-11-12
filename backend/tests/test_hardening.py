@@ -393,3 +393,15 @@ def test_the_password_never_needs_the_command_line(monkeypatch):
     monkeypatch.setattr("getpass.getpass", lambda _: next(saisies))
     with pytest.raises(ValueError, match="diffèrent"):
         read_password(None)
+
+
+def test_health_tells_whether_the_demo_account_exists(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings
+    from app.main import app
+
+    client = TestClient(app)
+    assert client.get("/api/health").json() == {"status": "ok", "demo": True}
+    monkeypatch.setattr(settings, "environment", "production")
+    assert client.get("/api/health").json() == {"status": "ok", "demo": False}
