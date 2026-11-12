@@ -71,7 +71,7 @@ export default function LibraryPage() {
     }
   }
 
-  async function useTemplate(template: LibraryTemplate, campaignId: string) {
+  async function addTemplateToCampaign(template: LibraryTemplate, campaignId: string) {
     setBusyAction({ key: template.id || template.key, action: "use" });
     try {
       const path = template.id ? `/library/templates/${template.id}/use` : `/library/featured/${template.key}/use`;
@@ -121,7 +121,7 @@ export default function LibraryPage() {
     </>}
 
     {selected && <TemplateModal template={selected} saved={Boolean(selected.id)} busyAction={busyAction?.action || ""} onClose={() => setSelected(null)} onSave={saveTemplate} onUse={setPending}/>}
-    {pending && <CampaignPicker campaigns={campaigns} busy={busyAction?.action === "use"} onClose={() => setPending(null)} onPick={campaignId => void useTemplate(pending, campaignId)}/>}
+    {pending && <CampaignPicker campaigns={campaigns} busy={busyAction?.action === "use"} onClose={() => setPending(null)} onPick={campaignId => void addTemplateToCampaign(pending, campaignId)}/>}
     {notice && <div className="library-toast"><Check size={16}/>{notice}</div>}
   </div>;
 }
