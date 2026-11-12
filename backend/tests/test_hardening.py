@@ -158,6 +158,56 @@ def test_the_relay_never_fetches_without_a_valid_signature(client, monkeypatch):
     assert client.get("/api/brand/image", params={"u": "https://exemple.fr/x.png", "s": "fausse"}).status_code == 404
 
 
+def test_the_relay_serves_an_image_that_can_never_run(client, monkeypatch):
+    """Ouverte directement, l'adresse du relais reste une image inerte."""
+    from app.brand_site import sign_image
+    from app.config import settings
+
+    monkeypatch.setattr("app.main.fetch_image", lambda _url: (b"x" * 9000, "image/png"))
+    url = "https://exemple.fr/logo.png"
+    reponse = client.get("/api/brand/image", params={"u": url, "s": sign_image(url, settings.secret_key)})
+    assert reponse.status_code == 200
+    assert reponse.headers["content-type"] == "image/png"
+    assert reponse.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in reponse.headers["content-security-policy"]
+
+
+def test_each_visitor_behind_the_web_relay_keeps_their_own_quota(client, monkeypatch):
+    """Les tunnels et les visuels passent par le serveur Next.
+
+    Sans l'adresse du visiteur, l'API verrait celle du conteneur web pour tout
+    le monde, et un seul compteur bloquerait tous les visiteurs a la fois.
+    uvicorn lit X-Forwarded-For, mais seulement depuis l'adresse que
+    compose.yaml donne au conteneur web : on rejoue ici ce montage.
+    """
+    import re
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    from app.main import app
+
+    compose = (Path(__file__).resolve().parents[2] / "compose.yaml").read_text(encoding="utf-8")
+    web_ip = re.search(r"ipv4_address: ([\d.]+)", compose).group(1)
+    assert f"FORWARDED_ALLOW_IPS: ${{FORWARDED_ALLOW_IPS:-{web_ip}}}" in compose
+
+    monkeypatch.setattr("app.main.BRAND_IMAGES", 2)
+    params = {"u": "https://exemple.fr/logo.png", "s": "fausse"}
+    derriere = ProxyHeadersMiddleware(app, trusted_hosts=web_ip)
+
+    def appel(pair: str, visiteur: str) -> int:
+        navigateur = TestClient(derriere, client=(pair, 40000))
+        return navigateur.get("/api/brand/image", params=params, headers={"x-forwarded-for": visiteur}).status_code
+
+    assert [appel(web_ip, "203.0.113.1") for _ in range(3)] == [404, 404, 429]
+    assert appel(web_ip, "203.0.113.2") == 404, "un autre visiteur garde son quota"
+
+    # Hors du relais, l'en-tete ne compte pas : changer d'adresse annoncee ne
+    # remet pas le compteur a zero.
+    assert [appel("198.51.100.7", f"203.0.113.{n}") for n in (10, 11, 12)] == [404, 404, 429]
+
+
 def test_tinycss2_is_declared(client):
     """brand_site.py l'importe : il ne doit pas dependre d'un extra de bleach."""
     from pathlib import Path

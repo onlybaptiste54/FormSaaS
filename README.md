@@ -131,7 +131,9 @@ Le mot de passe est demandé sans être affiché ; il doit faire 12 caractères 
 Deux limites à connaître avant d'ouvrir au public :
 
 - **La limitation de débit est comptée en mémoire, par processus.** L'image lance deux workers, donc les seuils réels sont doublés. Au-delà d'un petit trafic, il faudra un compteur partagé.
-- **`X-Forwarded-For` n'est pas lu**, parce qu'une limite qu'un en-tête suffit à contourner n'en est pas une. Derrière un reverse proxy, toutes les requêtes porteraient donc l'adresse du proxy : lancer uvicorn avec `--proxy-headers --forwarded-allow-ips=<adresse du proxy>` le jour où un proxy est ajouté.
+- **`X-Forwarded-For` n'est cru que s'il vient d'une adresse de confiance.** Les tunnels publics (`/t/...`) et les visuels de marque (`/media/brand`) passent par le serveur Next, qui transmet l'adresse du visiteur à l'API. Dans `compose.yaml`, le conteneur web a une adresse fixe (`172.30.42.10`, réseau `relais`) et l'API ne croit que celle-là (`FORWARDED_ALLOW_IPS`). Un appel direct à l'API garde sa propre adresse, même s'il envoie l'en-tête.
+- **En production, placer un reverse proxy devant le conteneur web, qui écrase `X-Forwarded-For`** (Caddy le fait par défaut ; avec nginx, `proxy_set_header X-Forwarded-For $remote_addr`). Sans lui, un visiteur peut annoncer l'adresse de son choix et contourner la limite des tunnels publics. Si ce proxy sert aussi l'API, ajouter son adresse : `FORWARDED_ALLOW_IPS=172.30.42.10,<adresse du proxy>`.
+- **Mise à jour d'une installation existante** : le réseau `relais` est nouveau. Lancer `docker compose down` puis `docker compose up -d --build` (sans `-v` : les données restent). Si le sous-réseau `172.30.42.0/24` est déjà pris sur la machine, le changer à la fois dans `networks`, `ipv4_address` et `FORWARDED_ALLOW_IPS`.
 
 ## Développement sans Docker
 

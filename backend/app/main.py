@@ -567,8 +567,12 @@ def brand_image(request: Request, u: str = Query(max_length=2000), s: str = Quer
         raise HTTPException(404, str(exc)) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(502, "Ce visuel n'a pas répondu.") from exc
+    # Ouverte directement, l'adresse ne doit jamais devenir un document actif :
+    # le navigateur ne devine pas le type, et rien ne s'execute.
     return Response(contenu, media_type=type_mime,
-                    headers={"Cache-Control": "public, max-age=86400"})
+                    headers={"Cache-Control": "public, max-age=86400",
+                             "X-Content-Type-Options": "nosniff",
+                             "Content-Security-Policy": "default-src 'none'; sandbox"})
 
 
 @app.get("/api/stats")
